@@ -1,1 +1,11 @@
-releases: {}
+ancestor: null
+releases:
+  0.1.0:
+    changes:
+      release_summary: 'Initial release, support for setting and clearing interface
+        description.
+
+        '
+    fragments:
+    - v0.1.0.yml
+    release_date: '2023-04-18'
