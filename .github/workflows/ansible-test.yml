@@ -59,8 +59,6 @@ jobs:
         with:
           ansible-core-version: ${{ matrix.ansible }}
           testing-type: sanity
-          # TODO: Test against other Python versions as well (but not 2.7)
-          target-python-version: 3.9
           # OPTIONAL If your sanity tests require code
           # from other collections, install them like this
           # test-deps: >-
