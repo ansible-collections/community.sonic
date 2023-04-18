@@ -16,8 +16,9 @@ To jump straight to it - this collection is useful for you if you want to manage
 An example says more than a thousand words, so here is an example:
 
 ```yaml
+# play.yml
 ---
-- name: connect to sonic swich and set a description on a port
+- name: Connect to a SONiC swich and set the description on a port
   hosts: sonic-sw1.example.com
   gather_facts: no
   tasks:
@@ -28,11 +29,12 @@ An example says more than a thousand words, so here is an example:
 ```
 
 ```ini
+# inventory.ini
 [my_sonic_switches]
 sonic-sw1.example.com ansible_user=sonic ansible_password=password
 ```
 ```bash
-ansible-playbook -i inventory.ini set_description.yml
+$ ansible-playbook -i inventory.ini set_description.yml
 ```
 
 ## Code of Conduct
