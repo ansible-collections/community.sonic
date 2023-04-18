@@ -20,7 +20,7 @@ An example says more than a thousand words, so here is an example:
 ---
 - name: Connect to a SONiC swich and set the description on a port
   hosts: sonic-sw1.example.com
-  gather_facts: no
+  gather_facts: false
   tasks:
     - name: Set port description
       community.sonic.sonic_interface_port:
