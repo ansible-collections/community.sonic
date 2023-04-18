@@ -57,15 +57,22 @@ We use the following guidelines:
 
 ### Running tests locally
 
+When developing new features you will want to run the tests to ensure things
+are working as they should.
+
+To run the unit tests:
+
+```
+$ ansible-test units --docker
+```
+
+To run the full integration suite using a virtual SONiC switch:
 
 ```
 $ docker build -t testbed -f testbed/Dockerfile testbed
 $ docker run --device /dev/kvm -ti -w /work/ansible_collections/community/sonic \
     -v $PWD:/work/ansible_collections/community/sonic --user 1000:1000 testbed /docker.sh
-# You can access the rendered documentation like this:
-$ xdg-open tests/output/docs/build/html/collections/community/sonic/index.html
 ```
-
 
 ## Collection maintenance
 
