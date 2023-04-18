@@ -39,14 +39,6 @@ RUN python3 -m venv /usr/local/ansible-venv && \
 
 ENV PATH /usr/local/ansible-venv/bin:$PATH
 
-# Pre-cache ansible-test environment
-RUN \
-  mkdir -p /tmp/ansible_collections/dummy/dummy; cd /tmp/ansible_collections/dummy/dummy; \
-  chown ubuntu.ubuntu /tmp/ansible_collections/dummy/dummy; touch galaxy.yml; \
-  mkdir -p plugins/modules/; touch plugins/modules/foo.py; \
-  su ubuntu -c 'ansible-test sanity'; \
-  rm -fr /tmp/ansible_collections
-
 COPY ssh_config /home/ubuntu/.ssh/config
 RUN chown -R ubuntu.ubuntu /home/ubuntu/.ssh
 

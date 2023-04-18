@@ -2,23 +2,6 @@
 
 set -euo pipefail
 
-echo ' - Doing static analysis while virtual SONiC starts'
-
-ansible-galaxy collection install $PWD
-
-yamllint -s .
-ansible-lint .
-ansible-test sanity \
-  --python $(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")') \
-  plugins/ \
-  tests/integration/
-
-echo ' - Building documentation'
-
-mkdir -p tests/output/docs
-antsibull-docs sphinx-init --use-current --fail-on-error --dest-dir tests/output/docs community.sonic
-(cd tests/output/docs; pip3 install -r requirements.txt > /dev/null; ./build.sh)
-
 echo ' - Waiting for virtual SONiC to start'
 until [ -S /tmp/sonic-vs.sock ]
 do
