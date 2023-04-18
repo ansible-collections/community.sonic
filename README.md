@@ -1,4 +1,11 @@
-# collection_template
+# Ansible collection for SONiC Network Operating System
+
+<p align="center">
+<img src="https://user-images.githubusercontent.com/149442/232787483-7a348ed3-265a-4d5d-8c05-95246a3aa7e9.png" alt="SONiC project logo" />
+</p>
+
+**TODO: WIP**
+
 You can build a new repository for an Ansible Collection using this template by following [Creating a repository from a template](https://help.github.com/en/github/creating-cloning-and-archiving-repositories/creating-a-repository-from-a-template). This README.md contains recommended headings for your collection README.md, with comments describing what each section should contain. Once you have created your collection repository, delete this paragraph and the title above it from your README.md.
 
 # Foo Collection for Ansible
