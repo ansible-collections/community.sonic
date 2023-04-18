@@ -93,7 +93,7 @@ Every voice is important. If you have something on your mind, create an issue or
  * Ansible 2.13
  * Ansible 2.14
  * Ansible 2.15
- * Ansible 2.16
+ * Ansible `devel` branch
 
 ## Tested with SONiC
 
@@ -136,7 +136,7 @@ See [Ansible Using collections](https://docs.ansible.com/ansible/devel/user_guid
 
 ## Release notes
 
-See the [changelog](https://github.com/ansible-collections/REPONAMEHERE/tree/main/CHANGELOG.rst).
+See the [changelog](https://github.com/ansible-collections/community.sonic/tree/main/CHANGELOG.rst).
 
 ## Licensing
 
