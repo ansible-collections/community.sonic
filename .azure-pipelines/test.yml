@@ -1,0 +1,36 @@
+---
+
+resources:
+  repositories:
+    - repository: community-sonic
+      type: github
+      name: bluecmd/community.sonic
+      endpoint: github
+  containers:
+    - container: sonic-vs
+      options: --device /dev/kvm --entrypoint=""
+      image: quay.io/bluecmd/ansible-community.sonic-testbed:main
+
+trigger:
+  - main
+pr:
+  - main
+
+pool:
+  name: sonicbld
+
+jobs:
+  - job: Test
+    timeoutInMinutes: 10
+    steps:
+      - bash: |
+          mkdir -p /tmp/ansible_collections/community/
+          cp -r $PWD /tmp/ansible_collections/community/sonic
+        target:
+          container: sonic-vs
+        displayName: Set-up container
+      - bash: |
+          /usr/bin/env -C /tmp/ansible_collections/community/sonic /docker.sh
+        target:
+          container: sonic-vs
+        displayName: Run testbench against virtual SONiC

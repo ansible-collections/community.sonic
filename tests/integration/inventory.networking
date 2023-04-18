@@ -1,0 +1,7 @@
+[all:vars]
+ansible_connection=ssh
+ansible_user=admin
+ansible_ssh_pass=YourPaSsWoRd
+
+[sonic]
+sonic-vs

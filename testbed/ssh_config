@@ -1,0 +1,3 @@
+Host sonic-vs
+  ProxyCommand socat - UNIX-CLIENT:/tmp/sonic-vs.sock
+  StrictHostKeyChecking no

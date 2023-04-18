@@ -1,0 +1,50 @@
+---
+- name: Set port description
+  community.sonic.sonic_interface_port:
+    interface: fortyGigE0/24
+    description: This is the uplink!
+  register: result1
+
+- name: Check the module returns what we expect
+  ansible.builtin.assert:
+    that:
+      - result1 is changed
+      - "'Ethernet' in result1.interface"
+
+- name: Query the system for the interface description
+  ansible.builtin.shell: "show int desc {{ result1.interface }}"
+  register: check1
+
+- name: Output from system command
+  ansible.builtin.debug:
+    msg: '{{ check1.stdout }}'
+
+- name: Check that the description has changed
+  ansible.builtin.assert:
+    that:
+      - "'This is the uplink' in check1.stdout"
+
+- name: Remove port description
+  community.sonic.sonic_interface_port:
+    interface: fortyGigE0/24
+  register: result2
+
+- name: Check the module returns what we expect
+  ansible.builtin.assert:
+    that:
+      - result2 is changed
+      - "'Ethernet' in result2.interface"
+
+- name: Query the system for the interface description
+  ansible.builtin.shell: "show int desc {{ result2.interface }}"
+  register: check2
+
+- name: Output from system command
+  ansible.builtin.debug:
+    msg: '{{ check2.stdout }}'
+
+- name: Check that the description is gone
+  ansible.builtin.assert:
+    that:
+      - "'This is the uplink' not in check2.stdout"
+      - "'N/A' not in check2.stdout"
