@@ -4,7 +4,7 @@ resources:
   repositories:
     - repository: community-sonic
       type: github
-      name: bluecmd/community.sonic
+      name: ansible-collections/community.sonic
       endpoint: github
   containers:
     - container: sonic-vs
