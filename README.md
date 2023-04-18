@@ -57,15 +57,23 @@ We use the following guidelines:
 
 ### Running tests locally
 
+When developing new features you will want to run the tests to ensure things
+are working as they should.
+
+To run the unit and sanity tests:
+
+```
+$ ansible-test units --docker
+$ ansible-test sanity --docker
+```
+
+To run the full integration suite using a virtual SONiC switch:
 
 ```
 $ docker build -t testbed -f testbed/Dockerfile testbed
 $ docker run --device /dev/kvm -ti -w /work/ansible_collections/community/sonic \
     -v $PWD:/work/ansible_collections/community/sonic --user 1000:1000 testbed /docker.sh
-# You can access the rendered documentation like this:
-$ xdg-open tests/output/docs/build/html/collections/community/sonic/index.html
 ```
-
 
 ## Collection maintenance
 
@@ -98,26 +106,30 @@ Every voice is important. If you have something on your mind, create an issue or
 ### Installing the Collection from Ansible Galaxy
 
 Before using this collection, you need to install it with the Ansible Galaxy command-line tool:
+
 ```bash
 ansible-galaxy collection install community.sonic
 ```
 
 You can also include it in a `requirements.yml` file and install it with `ansible-galaxy collection install -r requirements.yml`, using the format:
+
 ```yaml
 ---
 collections:
   - name: community.sonic
 ```
 
-Note that if you install the collection from Ansible Galaxy, it will not be upgraded automatically when you upgrade the `ansible` package. To upgrade the collection to the latest available version, run the following command:
+Note that if you install the collection from Ansible Galaxy, it will not be upgraded automatically when you upgrade the `ansible` package.
+To upgrade the collection to the latest available version, run the following command:
+
 ```bash
-ansible-galaxy collection install ommunity.sonic --upgrade
+$ ansible-galaxy collection install community.sonic --upgrade
 ```
 
 You can also install a specific version of the collection, for example, if you need to downgrade when something is broken in the latest version (please report an issue in this repository). Use the following syntax to install version `0.1.0`:
 
 ```bash
-ansible-galaxy collection install ommunity.sonic:==0.1.0
+$ ansible-galaxy collection install community.sonic:==0.1.0
 ```
 
 See [Ansible Using collections](https://docs.ansible.com/ansible/devel/user_guide/collections_using.html) for more details.

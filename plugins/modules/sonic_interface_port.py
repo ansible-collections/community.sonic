@@ -57,13 +57,41 @@ else:
     SWSSCOMMON_IMPORT_ERROR = None
 
 
+class ModuleError(Exception):
+    pass
+
+
+class NoSuchInterfaceError(ModuleError):
+    pass
+
+
+def mutate_state(port_table, interface, description=None):
+    changed = False
+    port_alias_table = {v['alias']: k for k, v in port_table.items() if 'alias' in v}
+    ifname = port_alias_table.get(interface, interface)
+    if ifname not in port_table:
+        raise NoSuchInterfaceError(f'could not find interface "{ifname}"')
+
+    current_state = port_table[ifname]
+    new_state = copy.copy(current_state)
+
+    if 'description' in current_state:
+        if description == '' or description is None:
+            del new_state['description']
+            changed = True
+    if description and (description != current_state.get('description', '')):
+        new_state['description'] = description
+        changed = True
+
+    return (current_state, new_state, ifname, changed)
+
+
 def run_module():
     module_args = dict(
         interface=dict(type='str', required=True),
         description=dict(type='str', required=False),
     )
 
-    changed = False
     module = AnsibleModule(
         argument_spec=module_args,
         supports_check_mode=True
@@ -77,23 +105,11 @@ def run_module():
     config_db = swsscommon.ConfigDBConnector()
     config_db.connect()
     port_table = config_db.get_table('PORT')
-    port_alias_table = {v['alias']: k for k, v in port_table.items() if 'alias' in v}
 
-    ifname = port_alias_table.get(module.params['interface'], module.params['interface'])
-    if ifname not in port_table:
-        module.fail_json(msg=f'could not find interface "{ifname}"')
-
-    current_state = port_table[ifname]
-    new_state = copy.copy(current_state)
-
-    if 'description' in current_state:
-        if module.params['description'] == '' or module.params['description'] is None:
-            del new_state['description']
-            changed = True
-    if module.params['description'] and (
-            module.params['description'] != current_state.get('description', '')):
-        new_state['description'] = module.params['description']
-        changed = True
+    try:
+        old_state, new_state, ifname, changed = mutate_state(port_table, **module.params)
+    except ModuleError as e:
+        module.fail_json(msg=str(e))
 
     if module.check_mode:
         module.exit_json(changed=changed, interface=ifname)
@@ -101,7 +117,7 @@ def run_module():
     if not changed:
         module.exit_json(changed=changed, interface=ifname)
 
-    if 'description' in current_state and 'description' not in new_state:
+    if 'description' in old_state and 'description' not in new_state:
         # Specifically for description, if it has been removed we need to clean
         # it up from APPL_DB / PORT_TABLE since that is not done automatically
         # as of this writing (2023-04-15).
