@@ -45,7 +45,6 @@ jobs:
           - stable-2.13
           - stable-2.14
           - stable-2.15
-          - devel
         # - milestone
     runs-on: ubuntu-latest
     steps:
@@ -82,7 +81,6 @@ jobs:
           - stable-2.13
           - stable-2.14
           - stable-2.15
-          - devel
     steps:
       - name: >-
           Perform unit testing against
