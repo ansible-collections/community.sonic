@@ -23,6 +23,15 @@ options:
         description: Update the interface description to this string
         required: false
         type: str
+    speed:
+        description: Human readable format for the interface speed
+        required: false
+        type: str
+    enabled:
+        description: Admin status for the interface
+        required: false
+        type: bool
+
 author:
     - Christian Svensson (@bluecmd)
 '''
@@ -33,6 +42,14 @@ EXAMPLES = r'''
   community.sonic.sonic_interface_port:
     interface: qsfp1
     description: This is the uplink
+
+# Set the interface description, speed, and state of a port
+- name: Set port description
+  community.sonic.sonic_interface_port:
+    interface: qsfp1
+    description: This is the uplink
+    speed: 1G
+    enabled: True
 '''
 
 RETURN = r'''
@@ -43,6 +60,7 @@ interface:
 '''
 
 import copy
+import re
 import traceback
 
 from ansible.module_utils.basic import AnsibleModule, missing_required_lib
@@ -65,7 +83,65 @@ class NoSuchInterfaceError(ModuleError):
     pass
 
 
-def mutate_state(port_table, interface, description=None):
+class InvalidSpeedError(ModuleError):
+    pass
+
+
+# TODO: Figure out how to move this to a utils class
+SIZE_RANGES = {
+    'Y': 10 ** 24,
+    'Z': 10 ** 21,
+    'E': 10 ** 18,
+    'P': 10 ** 15,
+    'T': 10 ** 12,
+    'G': 10 ** 9,
+    'M': 10 ** 6,
+    'K': 10 ** 3,
+    'B': 1,
+}
+
+
+# Fork of human_to_bytes that uses decade instead of 2-power
+def human_to_bits(number):
+    """Convert number in string format into bytes (ex: '2K' => 2000) or using unit argument."""
+    m = re.search(r'^\s*(\d*\.?\d*)\s*([A-Za-z]+)?', str(number), flags=re.IGNORECASE)
+    if m is None:
+        raise ValueError("human_to_bits() can't interpret following string: %s" % str(number))
+    try:
+        num = float(m.group(1))
+    except Exception:
+        raise ValueError("human_to_bits() can't interpret following number: %s (original input string: %s)" % (m.group(1), number))
+
+    unit = m.group(2)
+    if unit is None:
+        unit = 'B'
+
+    if unit is None:
+        # No unit given, returning raw number
+        return int(round(num))
+    range_key = unit[0].upper()
+    try:
+        limit = SIZE_RANGES[range_key]
+    except Exception:
+        raise ValueError("human_to_bits() failed to convert %s (unit = %s). The suffix must be one of %s" % (number, unit, ", ".join(SIZE_RANGES.keys())))
+
+    unit_class = 'b'
+    unit_class_name = 'bit'
+    # check unit value if more than one character (KB, MB)
+    if len(unit) > 1:
+        expect_message = 'expect %s%s or %s' % (range_key, unit_class, range_key)
+        if range_key == 'B':
+            expect_message = 'expect %s or %s' % (unit_class, unit_class_name)
+
+        if unit_class_name in unit.lower():
+            pass
+        elif unit[1] != unit_class:
+            raise ValueError("human_to_bits() failed to convert %s. Value is not a valid string (%s)" % (number, expect_message))
+
+    return int(round(num * limit))
+
+
+def mutate_state(port_table, interface, description=None, enabled=None, speed=None):
     changed = False
     port_alias_table = {v['alias']: k for k, v in port_table.items() if 'alias' in v}
     ifname = port_alias_table.get(interface, interface)
@@ -83,6 +159,23 @@ def mutate_state(port_table, interface, description=None):
         new_state['description'] = description
         changed = True
 
+    if enabled is not None:
+        if enabled:
+            new_state['admin_status'] = 'up'
+        else:
+            del new_state['admin_status']
+        changed = changed or (
+            new_state.get('admin_status') != current_state.get('admin_status'))
+
+    if speed is not None:
+        try:
+            b = int(human_to_bits(speed))
+        except ValueError:
+            raise InvalidSpeedError(f'could not parse speed "{speed}"')
+        new_state['speed'] = str(b // 1000 // 1000)
+        changed = changed or (
+            new_state.get('speed') != current_state.get('speed'))
+
     return (current_state, new_state, ifname, changed)
 
 
@@ -90,6 +183,8 @@ def run_module():
     module_args = dict(
         interface=dict(type='str', required=True),
         description=dict(type='str', required=False),
+        enabled=dict(type='bool', required=False),
+        speed=dict(type='str', required=False),
     )
 
     module = AnsibleModule(

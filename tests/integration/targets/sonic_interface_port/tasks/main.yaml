@@ -1,8 +1,10 @@
 ---
-- name: Set port description
+- name: Set port properties
   community.sonic.sonic_interface_port:
     interface: fortyGigE0/24
     description: This is the uplink!
+    speed: 1G
+    enabled: True
   register: result1
 
 - name: Check the module returns what we expect
@@ -37,6 +39,9 @@
 
 - name: Query the system for the interface description
   ansible.builtin.shell: "show int desc {{ result2.interface }}"
+  retries: 10
+  delay: 1
+  until: "'This is the uplink' not in check2.stdout"
   register: check2
 
 - name: Output from system command
@@ -48,3 +53,16 @@
     that:
       - "'This is the uplink' not in check2.stdout"
       - "'N/A' not in check2.stdout"
+
+- name: Query the system for the interface status
+  ansible.builtin.shell: "show int status {{ result1.interface }}"
+  register: check3
+
+- name: Output from system command
+  ansible.builtin.debug:
+    msg: '{{ check3.stdout }}'
+
+- name: Check that the speed and status is what we expect
+  ansible.builtin.assert:
+    that:
+      - "['1G', '9100', 'N/A', 'fortyGigE0/24', 'routed', 'down', 'up'] == check3.stdout.split()[-9:-2]"
