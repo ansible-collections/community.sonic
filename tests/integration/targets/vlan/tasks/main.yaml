@@ -1,0 +1,51 @@
+---
+- name: Add VLAN
+  community.sonic.vlan:
+    vlanid: 3360
+    dhcp_servers:
+      - '127.0.0.1'
+  register: add_vlan_result
+
+- name: Check the module returns what we expect
+  ansible.builtin.assert:
+    that:
+      - add_vlan_result is changed
+      - "'Vlan3360' in add_vlan_result.interface"
+
+- name: Query the system for vlans
+  ansible.builtin.shell: "show vlan brief"
+  register: vlan_brief_result
+
+- name: Output from system command
+  ansible.builtin.debug:
+    msg: '{{ vlan_brief_result.stdout }}'
+
+- name: Check that the VLAN has been added
+  ansible.builtin.assert:
+    that:
+      - "'|      3360 |              |         |                | disabled    | 127.0.0.1             |' in vlan_brief_result.stdout"
+
+- name: Remove VLAN
+  community.sonic.vlan:
+    vlanid: 3360
+    state: absent
+  register: remove_vlan_result
+
+- name: Check the module returns what we expect
+  ansible.builtin.assert:
+    that:
+      - remove_vlan_result is changed
+      - "'Vlan3360' in remove_vlan_result.interface"
+
+- name: Query the system for vlans
+  ansible.builtin.shell: "show vlan brief"
+  register: vlan_brief_result
+
+- name: Output from system command
+  ansible.builtin.debug:
+    msg: '{{ vlan_brief_result.stdout }}'
+
+- name: Check that the VLAN has been removed
+  ansible.builtin.assert:
+    that:
+      - "'|      3360 |              |         |                | disabled    | 127.0.0.1             |' not in vlan_brief_result.stdout"
