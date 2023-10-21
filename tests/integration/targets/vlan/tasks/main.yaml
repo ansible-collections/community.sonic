@@ -25,6 +25,81 @@
     that:
       - "'|      3360 |              |         |                | disabled    | 127.0.0.1             |' in vlan_brief_result.stdout"
 
+- name: Add tagged VLAN member
+  community.sonic.vlan_member:
+    vlanid: 3360
+    interface: Ethernet0
+    tagged: true
+  register: add_vlan_member_result
+
+- name: Check the module returns what we expect
+  ansible.builtin.assert:
+    that:
+      - add_vlan_member_result is changed
+
+- name: Query the system for vlans
+  ansible.builtin.shell: "show vlan brief"
+  register: vlan_brief_result
+
+- name: Output from system command
+  ansible.builtin.debug:
+    msg: '{{ vlan_brief_result.stdout }}'
+
+- name: Check that the VLAN member has been added
+  ansible.builtin.assert:
+    that:
+      - "'|      3360 |              | Ethernet0 | tagged         | disabled    | 127.0.0.1             |' in vlan_brief_result.stdout"
+
+- name: Change VLAN member to untagged
+  community.sonic.vlan_member:
+    vlanid: 3360
+    interface: Ethernet0
+    tagged: false
+  register: mod_vlan_member_result
+
+- name: Check the module returns what we expect
+  ansible.builtin.assert:
+    that:
+      - mod_vlan_member_result is changed
+
+- name: Query the system for vlans
+  ansible.builtin.shell: "show vlan brief"
+  register: vlan_brief_result
+
+- name: Output from system command
+  ansible.builtin.debug:
+    msg: '{{ vlan_brief_result.stdout }}'
+
+- name: Check that the VLAN member has been changed to untagged
+  ansible.builtin.assert:
+    that:
+      - "'|      3360 |              | Ethernet0 | untagged       | disabled    | 127.0.0.1             |' in vlan_brief_result.stdout"
+
+- name: Remove VLAN member
+  community.sonic.vlan_member:
+    vlanid: 3360
+    interface: Ethernet0
+    state: absent
+  register: del_vlan_member_result
+
+- name: Check the module returns what we expect
+  ansible.builtin.assert:
+    that:
+      - del_vlan_member_result is changed
+
+- name: Query the system for vlans
+  ansible.builtin.shell: "show vlan brief"
+  register: vlan_brief_result
+
+- name: Output from system command
+  ansible.builtin.debug:
+    msg: '{{ vlan_brief_result.stdout }}'
+
+- name: Check that the VLAN member has been removed
+  ansible.builtin.assert:
+    that:
+      - "'|      3360 |              |         |                | disabled    | 127.0.0.1             |' in vlan_brief_result.stdout"
+
 - name: Remove VLAN
   community.sonic.vlan:
     vlanid: 3360
