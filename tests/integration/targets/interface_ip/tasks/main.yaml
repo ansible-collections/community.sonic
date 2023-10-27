@@ -1,0 +1,85 @@
+---
+# add IP
+- name: add IP
+  community.sonic.interface_ip:
+    interface: Loopback0
+    addresses:
+      - '254.1.1.1/29'
+  register: add_ip_result
+
+- name: check add IP result
+  ansible.builtin.assert:
+    that:
+      - add_ip_result is changed
+      - add_ip_result.interface == 'Loopback0'
+      - "'254.1.1.1/29' in add_ip_result.addresses"
+
+- name: run show ip interface after add
+  ansible.builtin.shell: "show ip interface"
+  register: show_ip_result
+
+- name: output from show ip interface after add
+  ansible.builtin.debug:
+    msg: '{{ show_ip_result.stdout }}'
+
+- name: check show ip interface output after add
+  ansible.builtin.assert:
+    that:
+      - "'                       254.1.1.1/29                       N/A             N/A' in show_ip_result.stdout"
+
+- name: add same IP
+  community.sonic.interface_ip:
+    interface: Loopback0
+    addresses:
+      - '254.1.1.1/29'
+  register: add_same_ip_result
+
+- name: check add same IP result
+  ansible.builtin.assert:
+    that:
+      - add_same_ip_result is not changed
+      - add_same_ip_result.interface == 'Loopback0'
+      - "'254.1.1.1/29' not in add_same_ip_result.addresses"
+
+- name: remove IP
+  community.sonic.interface_ip:
+    interface: Loopback0
+    state: absent
+    addresses:
+      - '254.1.1.1/29'
+  register: remove_ip_result
+
+- name: check remove IP result
+  ansible.builtin.assert:
+    that:
+      - remove_ip_result is changed
+      - remove_ip_result.interface == 'Loopback0'
+      - "'254.1.1.1/29' in remove_ip_result.addresses"
+
+- name: run show ip interface after remove
+  ansible.builtin.shell: "show ip interface"
+  register: show_ip_result
+
+- name: output from show ip interface after remove
+  ansible.builtin.debug:
+    msg: '{{ show_ip_result.stdout }}'
+
+- name: check show ip interface output after remove
+  ansible.builtin.assert:
+    that:
+      - "'                       254.1.1.1/29                       N/A             N/A' not in show_ip_result.stdout"
+
+- name: remove same IP
+  community.sonic.interface_ip:
+    interface: Loopback0
+    state: absent
+    addresses:
+      - '254.1.1.1/29'
+  register: remove_same_ip_result
+
+- name: check remove IP result
+  ansible.builtin.assert:
+    that:
+      - remove_same_ip_result is not changed
+      - remove_same_ip_result.interface == 'Loopback0'
+      - "'254.1.1.1/29' not in remove_same_ip_result.addresses"
