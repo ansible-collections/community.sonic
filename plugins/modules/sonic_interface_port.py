@@ -64,15 +64,7 @@ import re
 import traceback
 
 from ansible.module_utils.basic import AnsibleModule, missing_required_lib
-
-try:
-    from swsscommon import swsscommon
-except ImportError:
-    HAS_SWSSCOMMON_LIBRARY = False
-    SWSSCOMMON_IMPORT_ERROR = traceback.format_exc()
-else:
-    HAS_SWSSCOMMON_LIBRARY = True
-    SWSSCOMMON_IMPORT_ERROR = None
+from ansible_collections.community.sonic.plugins.module_utils.imports import get_swsscommon
 
 
 class ModuleError(Exception):
@@ -192,10 +184,11 @@ def run_module():
         supports_check_mode=True
     )
 
-    if not HAS_SWSSCOMMON_LIBRARY:
+    swsscommon, swsscommon_traceback = get_swsscommon()
+    if swsscommon_traceback:
         module.fail_json(
             msg=missing_required_lib('swsscommon'),
-            exception=SWSSCOMMON_IMPORT_ERROR)
+            exception=swsscommon_traceback)
 
     config_db = swsscommon.ConfigDBConnector()
     config_db.connect()
