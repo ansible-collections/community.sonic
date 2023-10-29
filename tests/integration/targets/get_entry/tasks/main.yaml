@@ -1,0 +1,35 @@
+---
+- name: get DEVICE_METADATA table
+  community.sonic.get_entry:
+    table: DEVICE_METADATA
+  register: table_result
+
+- name: Output from table get_entry
+  ansible.builtin.debug:
+    msg: '{{ table_result }}'
+
+- name: Check the module returns what we expect
+  ansible.builtin.assert:
+    that:
+      - table_result is not changed
+      - table_result.table == 'DEVICE_METADATA'
+      - table_result.value
+      - "'key' not in table_result"
+
+- name: get localhost in DEVICE_METADATA table
+  community.sonic.get_entry:
+    table: DEVICE_METADATA
+    key: localhost
+  register: key_result
+
+- name: Output from key get_entry
+  ansible.builtin.debug:
+    msg: '{{ key_result }}'
+
+- name: Check the module returns what we expect
+  ansible.builtin.assert:
+    that:
+      - key_result is not changed
+      - key_result.table == 'DEVICE_METADATA'
+      - key_result.key == 'localhost'
+      - key_result.value.hostname == 'sonic'
