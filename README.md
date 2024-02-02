@@ -105,10 +105,9 @@ Every voice is important. If you have something on your mind, create an issue or
 
 ## Tested with Ansible
 
- * Ansible 2.12
- * Ansible 2.13
  * Ansible 2.14
  * Ansible 2.15
+ * Ansible 2.16
 
 ## Tested with SONiC
 
