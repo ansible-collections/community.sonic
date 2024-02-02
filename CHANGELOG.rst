@@ -5,6 +5,9 @@ Ansible SONiC community collection Release Notes
 .. contents:: Topics
 
 
+v0.3.0
+======
+
 v0.2.0
 ======
 
@@ -22,4 +25,3 @@ Release Summary
 ---------------
 
 Initial release, support for setting and clearing interface description.
-
