@@ -66,3 +66,47 @@
   ansible.builtin.assert:
     that:
       - "['1G', '9100', 'N/A', 'fortyGigE0/24', 'routed', 'down', 'up'] == check3.stdout.split()[-9:-2]"
+
+- name: Set port properties - 100G mode
+  community.sonic.sonic_interface_port:
+    interface: fortyGigE0/24
+    description: This is the uplink!
+    speed: 100G
+    enabled: True
+    fec: rs
+  register: result3
+
+- name: Query the system for the interface status
+  ansible.builtin.shell: "show int status {{ result3.interface }}"
+  register: check4
+
+- name: Output from system command
+  ansible.builtin.debug:
+    msg: '{{ check4.stdout }}'
+
+- name: Check that the speed and status is what we expect
+  ansible.builtin.assert:
+    that:
+      - "['100G', '9100', 'rs', 'fortyGigE0/24', 'routed', 'down', 'up'] == check4.stdout.split()[-9:-2]"
+
+- name: Set port properties - 40G mode
+  community.sonic.sonic_interface_port:
+    interface: fortyGigE0/24
+    description: This is the uplink!
+    speed: 40G
+    enabled: True
+  register: result4
+
+- name: Query the system for the interface status
+  ansible.builtin.shell: "show int status {{ result4.interface }}"
+  register: check5
+
+- name: Output from system command
+  ansible.builtin.debug:
+    msg: '{{ check5.stdout }}'
+
+- name: Check that the speed and status is what we expect
+  ansible.builtin.assert:
+    that:
+      - "['40G', '9100', 'none', 'fortyGigE0/24', 'routed', 'down', 'up'] == check5.stdout.split()[-9:-2]"
+

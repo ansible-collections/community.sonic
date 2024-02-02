@@ -8,6 +8,9 @@ from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
 
+# NOTE: The FEC choices supported by SONiC is listed in
+# sonic-swss/orchagent/port/portschema.h as PORT_FEC_* macros.
+
 DOCUMENTATION = r'''
 ---
 module: sonic_interface_port
@@ -25,6 +28,15 @@ options:
         type: str
     speed:
         description: Human readable format for the interface speed
+        required: false
+        type: str
+    fec:
+        description: The FEC mode to use.
+        choices:
+            - none
+            - rs
+            - fc
+            - auto
         required: false
         type: str
     enabled:
@@ -141,7 +153,12 @@ def human_to_bits(number):
     return int(round(num * limit))
 
 
-def mutate_state(port_table, interface, description=None, enabled=None, speed=None):
+def mutate_state(port_table,
+                 interface,
+                 description=None,
+                 enabled=None,
+                 speed=None,
+                 fec=None):
     changed = False
     port_alias_table = {v['alias']: k for k, v in port_table.items() if 'alias' in v}
     ifname = port_alias_table.get(interface, interface)
@@ -176,6 +193,23 @@ def mutate_state(port_table, interface, description=None, enabled=None, speed=No
         changed = changed or (
             new_state.get('speed') != current_state.get('speed'))
 
+    # If the interface is configured for a speed that does not utilize FEC
+    # (e.g. 40G, or 10G) we remove the old FEC mode if a new one is not
+    # specified. This is done in order to not force the user to clean up
+    # the old FEC that may have been set from when the interface possibly
+    # operated on a higher speed.
+    # As it is not currently possible to remove the FEC entry in a nice way,
+    # we force it to 'none' instead.
+    port_speed_gbit = int(new_state.get('speed') or current_state.get('speed')) // 1000
+    if port_speed_gbit != 25 and port_speed_gbit < 100:
+        if fec is None and 'fec' in current_state:
+            fec = 'none'
+
+    if fec is not None:
+        new_state['fec'] = fec
+        changed = changed or (
+            new_state.get('fec') != current_state.get('fec'))
+
     return (current_state, new_state, ifname, changed)
 
 
@@ -185,6 +219,7 @@ def run_module():
         description=dict(type='str', required=False),
         enabled=dict(type='bool', required=False),
         speed=dict(type='str', required=False),
+        fec=dict(type='str', required=False),
     )
 
     module = AnsibleModule(

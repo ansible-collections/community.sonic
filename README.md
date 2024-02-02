@@ -27,6 +27,7 @@ An example says more than a thousand words, so here is an example:
         interface: qsfp1
         description: This is the uplink
         speed: 100G
+        fec: rs
         enabled: True
 ```
 
