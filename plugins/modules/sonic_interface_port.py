@@ -17,6 +17,11 @@ module: sonic_interface_port
 short_description: Configure a SONiC interface port
 version_added: "0.0.1"
 description: Manage all settings related to interface ports in SONiC
+attributes:
+  check_mode:
+    support: full
+  diff_mode:
+    support: full
 options:
     interface:
         description: The interface name to operate on. Alias naming is supported.
@@ -241,11 +246,13 @@ def run_module():
     except ModuleError as e:
         module.fail_json(msg=str(e))
 
+    diff = {'before': old_state, 'after': new_state}
+
     if module.check_mode:
-        module.exit_json(changed=changed, interface=ifname)
+        module.exit_json(changed=changed, interface=ifname, diff=diff)
 
     if not changed:
-        module.exit_json(changed=changed, interface=ifname)
+        module.exit_json(changed=changed, interface=ifname, diff=diff)
 
     if 'description' in old_state and 'description' not in new_state:
         # Specifically for description, if it has been removed we need to clean
@@ -257,7 +264,7 @@ def run_module():
 
     config_db.set_entry('PORT', ifname, new_state)
 
-    module.exit_json(changed=changed, interface=ifname)
+    module.exit_json(changed=changed, interface=ifname, diff=diff)
 
 
 def main():

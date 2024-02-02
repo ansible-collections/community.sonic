@@ -29,6 +29,7 @@
 - name: Remove port description
   community.sonic.sonic_interface_port:
     interface: fortyGigE0/24
+  diff: true
   register: result2
 
 - name: Check the module returns what we expect
@@ -74,6 +75,7 @@
     speed: 100G
     enabled: True
     fec: rs
+  diff: true
   register: result3
 
 - name: Query the system for the interface status
@@ -95,6 +97,7 @@
     description: This is the uplink!
     speed: 40G
     enabled: True
+  diff: true
   register: result4
 
 - name: Query the system for the interface status
