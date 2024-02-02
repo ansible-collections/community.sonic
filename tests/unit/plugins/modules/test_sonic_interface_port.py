@@ -80,4 +80,3 @@ def test_set_fec_implicit_downgrade():
         port_table, interface='qsfp1', speed='40G')
     assert changed, 'state was expected to change'
     assert new_state['fec'] == 'none', f"got fec {new_state['fec']}"
-

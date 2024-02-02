@@ -112,4 +112,3 @@
   ansible.builtin.assert:
     that:
       - "['40G', '9100', 'none', 'fortyGigE0/24', 'routed', 'down', 'up'] == check5.stdout.split()[-9:-2]"
-

@@ -17,6 +17,8 @@ module: sonic_interface_port
 short_description: Configure a SONiC interface port
 version_added: "0.0.1"
 description: Manage all settings related to interface ports in SONiC
+extends_documentation_fragment:
+  - community.sonic.attributes
 attributes:
   check_mode:
     support: full
@@ -224,7 +226,7 @@ def run_module():
         description=dict(type='str', required=False),
         enabled=dict(type='bool', required=False),
         speed=dict(type='str', required=False),
-        fec=dict(type='str', required=False),
+        fec=dict(type='str', required=False, choices=['none', 'rs', 'fc', 'auto']),
     )
 
     module = AnsibleModule(

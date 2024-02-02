@@ -5,8 +5,17 @@ Ansible SONiC community collection Release Notes
 .. contents:: Topics
 
 
+v0.3.1
+======
+
 v0.3.0
 ======
+
+Major Changes
+-------------
+
+- port - Module now handles FEC
+- port - Module now handles diff mode
 
 v0.2.0
 ======
