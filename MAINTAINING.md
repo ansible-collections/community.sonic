@@ -122,19 +122,22 @@ for all supported core branches and `devel`. Each job checks KVM and free disk
 space, builds a controller image from the checkout, downloads the VS image
 separately, and mounts it read-only. Public runners provide 4 CPUs and 16 GiB
 RAM, enough for the 8 GiB VM; the separate image avoids a second large copy in a
-Docker image layer. No self-hosted runner or Azure credentials are needed.
+Docker image layer. The image creates a real passwd entry for the runner UID
+(using `TESTBED_UID` and `TESTBED_GID` build arguments), which OpenSSH requires.
+No self-hosted runner or Azure credentials are needed.
 
 The stable `check` status requires both the sanity/unit and integration matrices.
 VM console logs, container logs, and ansible-test output are retained as GitHub
 artifacts for seven days, including after failure. Boot and download failures
 fail the job; unavailable KVM does not silently skip integration.
 
-The Azure pipeline source is retired. Historical Azure runs are retained for
-reference. GitHub branch protection should require `check`, replacing the old
+The Azure pipeline is replaced by a tombstone with CI, PR, and scheduled
+triggers disabled, so Azure can read the trigger removal when this reaches main.
+Historical Azure runs are retained for reference. GitHub branch protection should require `check`, replacing the old
 `ansible-collections.community.sonic` status supplied by Azure, after the new
 GitHub integration jobs have been verified. Disabling the remote Azure pipeline
 and cancelling its already queued jobs requires Azure administrator access;
-removing a repository YAML file does not cancel already queued remote jobs.
+disabling YAML triggers does not cancel already queued remote jobs.
 
 Both existing workflows were subsequently re-enabled and verified `active` via
 the GitHub API. The refresh and migration are published for review in

@@ -99,7 +99,8 @@ The SONiC 202605 image is downloaded during the build; `SONIC_BRANCH` and
 [MAINTAINING.md](MAINTAINING.md) for a separate image cache option.
 
 ```
-$ docker build -t testbed -f testbed/Dockerfile testbed
+$ docker build --build-arg "TESTBED_UID=$(id -u)" --build-arg "TESTBED_GID=$(id -g)" \
+    -t testbed -f testbed/Dockerfile testbed
 $ docker run --device /dev/kvm -ti -w /work/ansible_collections/community/sonic \
     -v "$PWD:/work/ansible_collections/community/sonic" \
     --user "$(id -u):$(id -g)" testbed -- /docker.sh

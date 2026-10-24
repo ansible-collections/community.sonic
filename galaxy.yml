@@ -20,4 +20,5 @@ build_ignore:
   - testbed
   - tests
   - .github
+  - .azure-pipelines
   - .vscode

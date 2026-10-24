@@ -20,7 +20,10 @@ RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
-RUN useradd -m ubuntu
+ARG TESTBED_UID=1000
+ARG TESTBED_GID=1000
+RUN groupadd --gid "$TESTBED_GID" ubuntu && \
+      useradd --uid "$TESTBED_UID" --gid ubuntu --create-home ubuntu
 
 COPY requirements.txt /tmp/
 COPY galaxy-requirements.yml /tmp/

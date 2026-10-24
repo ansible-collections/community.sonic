@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+if ! getent passwd "$(id -u)" >/dev/null; then
+  echo 'The container UID needs a passwd entry for SSH; build with TESTBED_UID/TESTBED_GID matching your user' >&2
+  exit 1
+fi
+
 (sleep 1; echo) | \
   (qemu-system-x86_64 -snapshot -machine q35 -accel kvm \
     -m "${SONIC_MEMORY_MIB:-8192}" -cpu host -smp 4 -hda /opt/sonic-vs.img -nographic \

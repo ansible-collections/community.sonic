@@ -62,6 +62,7 @@ jobs:
           ANSIBLE_CORE_REF: ${{ matrix.ansible }}
         run: |
           docker build --build-arg DOWNLOAD_SONIC_IMAGE=false \
+            --build-arg "TESTBED_UID=$(id -u)" --build-arg "TESTBED_GID=$(id -g)" \
             --build-arg "ANSIBLE_CORE_REF=$ANSIBLE_CORE_REF" \
             -t community-sonic-testbed -f testbed/Dockerfile testbed
       - name: Download SONiC virtual disk

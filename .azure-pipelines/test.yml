@@ -1,0 +1,13 @@
+---
+# Deprecated. Keep this tombstone so Azure reads explicit trigger/schedule
+# removal when the migration reaches main. All tests live in GitHub Actions.
+trigger: none
+pr: none
+schedules: []
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - bash: echo 'Azure CI is retired. Use the CI workflow in GitHub Actions.'
+    displayName: Azure pipeline retired
