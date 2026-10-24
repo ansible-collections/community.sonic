@@ -4,6 +4,8 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
+import copy
+
 import pytest
 
 from ansible_collections.community.sonic.plugins.modules import sonic_interface_port
@@ -27,7 +29,7 @@ def test_set_description_by_alias():
 # Test clearing both by unsetting the field and by setting an empty string
 @pytest.mark.parametrize('value', (None, ''))
 def test_clear_description_by_alias(value):
-    port_table = dict(PORT_TABLE)
+    port_table = copy.deepcopy(PORT_TABLE)
     port_table['Ethernet0']['description'] = 'foobar'
     _, new_state, _, changed = sonic_interface_port.mutate_state(
         port_table, interface='qsfp1', description=value)
@@ -47,10 +49,8 @@ def test_set_speed(value, expected):
 
 
 def test_set_invalid_speed():
-    try:
+    with pytest.raises(sonic_interface_port.InvalidSpeedError):
         sonic_interface_port.mutate_state(PORT_TABLE, interface='qsfp1', speed='foobar')
-    except sonic_interface_port.InvalidSpeedError:
-        pass
 
 
 def test_set_enable_then_disable():
@@ -73,10 +73,34 @@ def test_set_fec():
 
 
 def test_set_fec_implicit_downgrade():
-    port_table = dict(PORT_TABLE)
+    port_table = copy.deepcopy(PORT_TABLE)
     port_table['Ethernet0']['speed'] = '100000'
     port_table['Ethernet0']['fec'] = 'rs'
     _, new_state, _, changed = sonic_interface_port.mutate_state(
         port_table, interface='qsfp1', speed='40G')
     assert changed, 'state was expected to change'
     assert new_state['fec'] == 'none', f"got fec {new_state['fec']}"
+
+
+@pytest.mark.parametrize('admin_status', (None, 'down', 'up'))
+def test_disable_is_idempotent(admin_status):
+    port_table = copy.deepcopy(PORT_TABLE)
+    if admin_status is not None:
+        port_table['Ethernet0']['admin_status'] = admin_status
+    old_state, new_state, ifname, changed = sonic_interface_port.mutate_state(
+        port_table, interface='qsfp1', enabled=False)
+    assert changed == (admin_status is not None)
+    assert 'admin_status' not in new_state
+    assert old_state == port_table['Ethernet0']
+    _, repeated_state, _, repeated_changed = sonic_interface_port.mutate_state(
+        {ifname: new_state}, interface=ifname, enabled=False)
+    assert repeated_state == new_state
+    assert not repeated_changed
+
+
+def test_description_without_configured_speed():
+    port_table = {'Ethernet0': {'alias': 'qsfp1', 'fec': 'rs'}}
+    _, new_state, _, changed = sonic_interface_port.mutate_state(
+        port_table, interface='qsfp1', description='uplink')
+    assert changed
+    assert new_state == {'alias': 'qsfp1', 'fec': 'rs', 'description': 'uplink'}

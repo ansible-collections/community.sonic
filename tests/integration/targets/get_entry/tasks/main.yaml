@@ -13,7 +13,7 @@
     that:
       - table_result is not changed
       - table_result.table == 'DEVICE_METADATA'
-      - table_result.value
+      - table_result.value | length > 0
       - "'key' not in table_result"
 
 - name: get localhost in DEVICE_METADATA table

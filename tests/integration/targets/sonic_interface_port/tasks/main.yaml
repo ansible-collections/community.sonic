@@ -1,10 +1,10 @@
 ---
 - name: Set port properties
   community.sonic.sonic_interface_port:
-    interface: fortyGigE0/24
+    interface: Ethernet0
     description: This is the uplink!
     speed: 1G
-    enabled: True
+    enabled: true
   register: result1
 
 - name: Check the module returns what we expect
@@ -14,8 +14,12 @@
       - "'Ethernet' in result1.interface"
 
 - name: Query the system for the interface description
-  ansible.builtin.shell: "show int desc {{ result1.interface }}"
+  ansible.builtin.command: "show interfaces description {{ result1.interface }}"
+  changed_when: false
   register: check1
+  retries: 10
+  delay: 1
+  until: "'This is the uplink' in check1.stdout"
 
 - name: Output from system command
   ansible.builtin.debug:
@@ -28,7 +32,7 @@
 
 - name: Remove port description
   community.sonic.sonic_interface_port:
-    interface: fortyGigE0/24
+    interface: Ethernet0
   diff: true
   register: result2
 
@@ -39,7 +43,8 @@
       - "'Ethernet' in result2.interface"
 
 - name: Query the system for the interface description
-  ansible.builtin.shell: "show int desc {{ result2.interface }}"
+  ansible.builtin.command: "show interfaces description {{ result2.interface }}"
+  changed_when: false
   retries: 10
   delay: 1
   until: "'This is the uplink' not in check2.stdout"
@@ -56,59 +61,110 @@
       - "'N/A' not in check2.stdout"
 
 - name: Query the system for the interface status
-  ansible.builtin.shell: "show int status {{ result1.interface }}"
+  community.sonic.get_entry:
+    table: PORT
+    key: "{{ result1.interface }}"
   register: check3
 
 - name: Output from system command
   ansible.builtin.debug:
-    msg: '{{ check3.stdout }}'
+    msg: '{{ check3.value }}'
 
 - name: Check that the speed and status is what we expect
   ansible.builtin.assert:
     that:
-      - "['1G', '9100', 'N/A', 'fortyGigE0/24', 'routed', 'down', 'up'] == check3.stdout.split()[-9:-2]"
+      - check3.value.speed == '1000'
+      - check3.value.admin_status == 'up'
 
 - name: Set port properties - 100G mode
   community.sonic.sonic_interface_port:
-    interface: fortyGigE0/24
+    interface: Ethernet0
     description: This is the uplink!
     speed: 100G
-    enabled: True
+    enabled: true
     fec: rs
   diff: true
   register: result3
 
 - name: Query the system for the interface status
-  ansible.builtin.shell: "show int status {{ result3.interface }}"
+  community.sonic.get_entry:
+    table: PORT
+    key: "{{ result3.interface }}"
   register: check4
 
 - name: Output from system command
   ansible.builtin.debug:
-    msg: '{{ check4.stdout }}'
+    msg: '{{ check4.value }}'
 
 - name: Check that the speed and status is what we expect
   ansible.builtin.assert:
     that:
-      - "['100G', '9100', 'rs', 'fortyGigE0/24', 'routed', 'down', 'up'] == check4.stdout.split()[-9:-2]"
+      - check4.value.speed == '100000'
+      - check4.value.admin_status == 'up'
+      - check4.value.fec == 'rs'
 
 - name: Set port properties - 40G mode
   community.sonic.sonic_interface_port:
-    interface: fortyGigE0/24
+    interface: Ethernet0
     description: This is the uplink!
     speed: 40G
-    enabled: True
+    enabled: true
   diff: true
   register: result4
 
 - name: Query the system for the interface status
-  ansible.builtin.shell: "show int status {{ result4.interface }}"
+  community.sonic.get_entry:
+    table: PORT
+    key: "{{ result4.interface }}"
   register: check5
 
 - name: Output from system command
   ansible.builtin.debug:
-    msg: '{{ check5.stdout }}'
+    msg: '{{ check5.value }}'
 
 - name: Check that the speed and status is what we expect
   ansible.builtin.assert:
     that:
-      - "['40G', '9100', 'none', 'fortyGigE0/24', 'routed', 'down', 'up'] == check5.stdout.split()[-9:-2]"
+      - check5.value.speed == '40000'
+      - check5.value.admin_status == 'up'
+      - check5.value.fec == 'none'
+
+
+- name: Predict disabling the interface
+  community.sonic.sonic_interface_port:
+    interface: Ethernet0
+    enabled: false
+  check_mode: true
+  diff: true
+  register: disable_prediction
+
+- name: Read interface after check mode
+  community.sonic.get_entry:
+    table: PORT
+    key: Ethernet0
+  register: after_check_mode
+
+- name: Verify check mode did not write
+  ansible.builtin.assert:
+    that:
+      - disable_prediction is changed
+      - after_check_mode.value.admin_status == 'up'
+      - "'admin_status' not in disable_prediction.diff.after"
+
+- name: Disable the interface
+  community.sonic.sonic_interface_port:
+    interface: Ethernet0
+    enabled: false
+  register: disabled
+
+- name: Disable the interface again
+  community.sonic.sonic_interface_port:
+    interface: Ethernet0
+    enabled: false
+  register: disabled_again
+
+- name: Check disabling is idempotent
+  ansible.builtin.assert:
+    that:
+      - disabled is changed
+      - disabled_again is not changed

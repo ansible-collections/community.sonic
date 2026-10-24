@@ -12,8 +12,22 @@
       - add_vlan_result is changed
       - "'Vlan3360' in add_vlan_result.interface"
 
+- name: Apply the same VLAN again
+  community.sonic.vlan:
+    vlanid: 3360
+    dhcp_servers:
+      - '127.0.0.1'
+  register: unchanged_vlan_result
+
+- name: Check VLAN creation is idempotent
+  ansible.builtin.assert:
+    that:
+      - unchanged_vlan_result is not changed
+      - unchanged_vlan_result.diff.before == unchanged_vlan_result.diff.after
+
 - name: Query the system for vlans
-  ansible.builtin.shell: "show vlan brief"
+  ansible.builtin.command: show vlan brief
+  changed_when: false
   register: vlan_brief_result
 
 - name: Output from system command
@@ -23,7 +37,7 @@
 - name: Check that the VLAN has been added
   ansible.builtin.assert:
     that:
-      - "'|      3360 |              |         |                | disabled    | 127.0.0.1             |' in vlan_brief_result.stdout"
+      - vlan_brief_result.stdout is search('(?m)^.*\\b3360\\b.*127[.]0[.]0[.]1.*$')
 
 - name: Add tagged VLAN member
   community.sonic.vlan_member:
@@ -38,7 +52,8 @@
       - add_vlan_member_result is changed
 
 - name: Query the system for vlans
-  ansible.builtin.shell: "show vlan brief"
+  ansible.builtin.command: show vlan brief
+  changed_when: false
   register: vlan_brief_result
 
 - name: Output from system command
@@ -48,7 +63,7 @@
 - name: Check that the VLAN member has been added
   ansible.builtin.assert:
     that:
-      - "'|      3360 |              | Ethernet0 | tagged         | disabled    | 127.0.0.1             |' in vlan_brief_result.stdout"
+      - vlan_brief_result.stdout is search('(?m)^.*\\b3360\\b.*Ethernet0.*\\btagged\\b.*$')
 
 - name: Change VLAN member to untagged
   community.sonic.vlan_member:
@@ -63,7 +78,8 @@
       - mod_vlan_member_result is changed
 
 - name: Query the system for vlans
-  ansible.builtin.shell: "show vlan brief"
+  ansible.builtin.command: show vlan brief
+  changed_when: false
   register: vlan_brief_result
 
 - name: Output from system command
@@ -73,7 +89,7 @@
 - name: Check that the VLAN member has been changed to untagged
   ansible.builtin.assert:
     that:
-      - "'|      3360 |              | Ethernet0 | untagged       | disabled    | 127.0.0.1             |' in vlan_brief_result.stdout"
+      - vlan_brief_result.stdout is search('(?m)^.*\\b3360\\b.*Ethernet0.*\\buntagged\\b.*$')
 
 - name: Remove VLAN member
   community.sonic.vlan_member:
@@ -88,7 +104,8 @@
       - del_vlan_member_result is changed
 
 - name: Query the system for vlans
-  ansible.builtin.shell: "show vlan brief"
+  ansible.builtin.command: show vlan brief
+  changed_when: false
   register: vlan_brief_result
 
 - name: Output from system command
@@ -98,7 +115,8 @@
 - name: Check that the VLAN member has been removed
   ansible.builtin.assert:
     that:
-      - "'|      3360 |              |         |                | disabled    | 127.0.0.1             |' in vlan_brief_result.stdout"
+      - vlan_brief_result.stdout is search('(?m)^.*\\b3360\\b.*127[.]0[.]0[.]1.*$')
+      - vlan_brief_result.stdout is not search('(?m)^.*\\b3360\\b.*Ethernet0.*$')
 
 - name: Remove VLAN
   community.sonic.vlan:
@@ -113,7 +131,8 @@
       - "'Vlan3360' in remove_vlan_result.interface"
 
 - name: Query the system for vlans
-  ansible.builtin.shell: "show vlan brief"
+  ansible.builtin.command: show vlan brief
+  changed_when: false
   register: vlan_brief_result
 
 - name: Output from system command
@@ -123,4 +142,4 @@
 - name: Check that the VLAN has been removed
   ansible.builtin.assert:
     that:
-      - "'|      3360 |              |         |                | disabled    | 127.0.0.1             |' not in vlan_brief_result.stdout"
+      - vlan_brief_result.stdout is not search('(?m)^.*\\b3360\\b.*$')

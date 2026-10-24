@@ -12,7 +12,14 @@ DOCUMENTATION = r'''
 module: get_entry
 short_description: Get table/entry from SONiC configuration database
 version_added: "0.2.0"
-description: Manage VLANs in SONiC
+description: Read a table or entry from the SONiC configuration database
+extends_documentation_fragment:
+  - community.sonic.attributes
+attributes:
+  check_mode:
+    support: full
+  diff_mode:
+    support: none
 options:
     table:
         description: The table to lookup

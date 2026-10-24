@@ -18,7 +18,7 @@ An example says more than a thousand words, so here is an example:
 ```yaml
 # set_port_play.yml
 ---
-- name: Connect to a SONiC swich and set properties on a port
+- name: Connect to a SONiC switch and set properties on a port
   hosts: sonic-sw1.example.com
   gather_facts: false
   tasks:
@@ -28,7 +28,7 @@ An example says more than a thousand words, so here is an example:
         description: This is the uplink
         speed: 100G
         fec: rs
-        enabled: True
+        enabled: true
 ```
 
 ```ini
@@ -48,17 +48,19 @@ If you encounter abusive behavior, please refer to the [policy violations](https
 
 ## Communication
 
-We mostly hang out in the [SONiC Community Matrix](https://matrix.to/#/#sonic-net:matrix.org) room and on the [sonic-dev](https://lists.sonicfoundation.dev/g/sonic-dev) mailinglist.
+Join the [Ansible Forum Get Help category](https://forum.ansible.com/c/help/6) for
+Ansible usage questions. Use the existing `collections` tag and include
+`community.sonic` in the title. Everyone is welcome to participate.
+
+For SONiC discussions, join the [SONiC Community Matrix](https://matrix.to/#/#sonic-net:matrix.org) room and on the [sonic-dev](https://lists.sonicfoundation.dev/g/sonic-dev) mailing list.
 
 
 ## Contributing to this collection
 
 
-<!--Describe how the community can contribute to your collection. At a minimum, fill up and include the CONTRIBUTING.md file containing how and where users can create issues to report problems or request features for this collection. List contribution requirements, including preferred workflows and necessary testing, so you can benefit from community PRs. If you are following general Ansible contributor guidelines, you can link to - [Ansible Community Guide](https://docs.ansible.com/ansible/devel/community/index.html). List the current maintainers (contributors with write or higher access to the repository). The following can be included:-->
-
 The content of this collection is made by people like you, a community of individuals collaborating on making the world better through developing automation software.
 
-We are actively accepting new contributors.
+We welcome new contributors and maintainers.
 
 Any kind of contribution is very welcome.
 
@@ -77,6 +79,11 @@ We use the following guidelines:
 When developing new features you will want to run the tests to ensure things
 are working as they should.
 
+Run these commands from a checkout at
+`ansible_collections/community/sonic` (the path layout required by `ansible-test`).
+Install a supported `ansible-core` on the controller first. Docker runs the
+complete sanity suite across the Python versions supported by that core release.
+
 To run the unit and sanity tests:
 
 ```
@@ -84,12 +91,19 @@ $ ansible-test units --docker
 $ ansible-test sanity --docker
 ```
 
-To run the full integration suite using a virtual SONiC switch:
+To run the full integration suite using a virtual SONiC switch, use a Linux host
+with Docker and `/dev/kvm`. The image defaults to `stable-2.21`; pass
+`--build-arg ANSIBLE_CORE_REF=stable-2.19` (or another supported branch) to test it.
+The SONiC 202605 image is downloaded during the build; `SONIC_BRANCH` and
+`SONIC_IMAGE_URL` build arguments select another available image. See
+[MAINTAINING.md](MAINTAINING.md) for a separate image cache option.
 
 ```
-$ docker build -t testbed -f testbed/Dockerfile testbed
+$ docker build --build-arg "TESTBED_UID=$(id -u)" --build-arg "TESTBED_GID=$(id -g)" \
+    -t testbed -f testbed/Dockerfile testbed
 $ docker run --device /dev/kvm -ti -w /work/ansible_collections/community/sonic \
-    -v $PWD:/work/ansible_collections/community/sonic --user 1000:1000 testbed /docker.sh
+    -v "$PWD:/work/ansible_collections/community/sonic" \
+    --user "$(id -u):$(id -g)" testbed -- /docker.sh
 ```
 
 ## Collection maintenance
@@ -104,15 +118,27 @@ The process of decision making in this collection is based on discussing and fin
 
 Every voice is important. If you have something on your mind, create an issue or dedicated discussion and let's discuss it!
 
-## Tested with Ansible
+## Requirements and supported Ansible versions
 
- * Ansible 2.14
- * Ansible 2.15
- * Ansible 2.16
+This development branch requires `ansible-core >=2.19`. CI covers the maintained
+2.19, 2.20, and 2.21 branches, plus `devel`, with sanity, unit, and virtual-switch
+integration tests on GitHub Actions. Integration jobs use GitHub-hosted
+`ubuntu-24.04` x86 runners with KVM; no self-hosted or Azure runner is needed.
+See [maintenance status](MAINTAINING.md) for outstanding infrastructure checks.
+
+Use a controller Python version supported by your selected `ansible-core`.
+Modules run on the SONiC host and require Python 3.9 or newer and SONiC's
+`swsscommon` Python bindings. Python 3.8 targets are not supported, including
+when using `ansible-core 2.19`. Use SSH with the system Python interpreter that
+has those bindings installed; these modules do not use `network_cli` or an
+HTTP API. The Ansible user needs permission to access SONiC's configuration DB.
+
+The modules update the running configuration database. Persist changes with
+SONiC's configuration save procedure if they must survive a reboot.
 
 ## Tested with SONiC
 
- * Release 202211
+ * Release 202211 (historical integration baseline; a fresh VM run is pending)
 
 ### Supported connections
 
@@ -147,7 +173,7 @@ You can also install a specific version of the collection, for example, if you n
 $ ansible-galaxy collection install community.sonic:==0.1.0
 ```
 
-See [Ansible Using collections](https://docs.ansible.com/ansible/devel/user_guide/collections_using.html) for more details.
+See [Ansible Using collections](https://docs.ansible.com/projects/ansible/latest/collections_guide/collections_using.html) for more details.
 
 ## Release notes
 

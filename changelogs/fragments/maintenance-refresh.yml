@@ -1,0 +1,12 @@
+---
+breaking_changes:
+  - The development branch now requires ansible-core 2.19 or newer. This support change is intended for the next major collection release.
+minor_changes:
+  - vlan and vlan_member now return before/after diffs, including in check mode.
+  - CI now covers ansible-core 2.19, 2.20, 2.21 and devel, with daily runs and pinned GitHub Actions maintained by Dependabot.
+  - Move virtual-switch integration tests from Azure Pipelines to GitHub-hosted KVM runners, require them in the GitHub check status, and retain failure diagnostics. The testbed uses Debian Trixie, native QEMU SSH forwarding, and bounded boot and image-download waits.
+bugfixes:
+  - vlan - compare the VLAN ID as a database string so applying an existing VLAN is idempotent.
+  - sonic_interface_port - disabling an already disabled port no longer raises KeyError (https://github.com/ansible-collections/community.sonic/issues/17).
+  - sonic_interface_port - updating a port without a configured speed no longer raises TypeError.
+  - Correct documentation site template URLs and document target Python and swsscommon requirements.

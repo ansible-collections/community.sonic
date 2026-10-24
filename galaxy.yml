@@ -19,3 +19,6 @@ build_ignore:
   - changelogs/.plugin-cache.yaml
   - testbed
   - tests
+  - .github
+  - .azure-pipelines
+  - .vscode

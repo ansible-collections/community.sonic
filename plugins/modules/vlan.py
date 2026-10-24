@@ -10,9 +10,16 @@ __metaclass__ = type
 DOCUMENTATION = r'''
 ---
 module: vlan
-short_description: Configure a SONiC VLANs
+short_description: Configure SONiC VLANs
 version_added: "0.2.0"
 description: Manage VLANs in SONiC
+extends_documentation_fragment:
+  - community.sonic.attributes
+attributes:
+  check_mode:
+    support: full
+  diff_mode:
+    support: full
 options:
     vlanid:
         description: The VLAN ID to configure
@@ -95,7 +102,7 @@ def build_vlan_entry(vlanid, state, dhcp_servers):
         return key, None
 
     val = {
-        'vlanid': vlanid,
+        'vlanid': str(vlanid),
     }
     # Split dhcp_servers by IP family to reflect how the config db entry looks
     dhcpv4_servers = list()
@@ -142,12 +149,14 @@ def run_module():
     cur_val = config_db.get_entry('VLAN', key)
     changed = compare_entries(val, cur_val)
 
+    diff = {'before': cur_val or {}, 'after': val or {}}
+
     if module.check_mode or not changed:
-        module.exit_json(changed=changed, interface=key)
+        module.exit_json(changed=changed, interface=key, diff=diff)
 
     config_db.set_entry('VLAN', key, val)
 
-    module.exit_json(changed=changed, interface=key)
+    module.exit_json(changed=changed, interface=key, diff=diff)
 
 
 def main():

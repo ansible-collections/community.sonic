@@ -1,5 +1,4 @@
 #!/usr/bin/python
-# TODO: describe
 #
 # GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -30,7 +29,9 @@ options:
         required: true
         type: str
     description:
-        description: Update the interface description to this string
+        description:
+            - Update the interface description to this string.
+            - Omitting this option or passing an empty string removes the description.
         required: false
         type: str
     speed:
@@ -187,7 +188,7 @@ def mutate_state(port_table,
         if enabled:
             new_state['admin_status'] = 'up'
         else:
-            del new_state['admin_status']
+            new_state.pop('admin_status', None)
         changed = changed or (
             new_state.get('admin_status') != current_state.get('admin_status'))
 
@@ -207,8 +208,9 @@ def mutate_state(port_table,
     # operated on a higher speed.
     # As it is not currently possible to remove the FEC entry in a nice way,
     # we force it to 'none' instead.
-    port_speed_gbit = int(new_state.get('speed') or current_state.get('speed')) // 1000
-    if port_speed_gbit != 25 and port_speed_gbit < 100:
+    port_speed = new_state.get('speed')
+    port_speed_gbit = int(port_speed) // 1000 if port_speed else None
+    if port_speed_gbit is not None and port_speed_gbit != 25 and port_speed_gbit < 100:
         if fec is None and 'fec' in current_state:
             fec = 'none'
 
