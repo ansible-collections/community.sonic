@@ -21,4 +21,4 @@ sleep 60
 echo ' - Virtual SONiC started'
 
 export ANSIBLE_CONFIG="$PWD/testbed/ansible.cfg"
-script -e -c "ansible-test network-integration ${*}" /dev/null
+script -e -c "ansible-test network-integration --continue-on-error ${*}" /dev/null
