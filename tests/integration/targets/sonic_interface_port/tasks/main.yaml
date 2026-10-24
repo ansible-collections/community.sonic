@@ -17,6 +17,9 @@
   ansible.builtin.command: "show interfaces description {{ result1.interface }}"
   changed_when: false
   register: check1
+  retries: 10
+  delay: 1
+  until: "'This is the uplink' in check1.stdout"
 
 - name: Output from system command
   ansible.builtin.debug:
