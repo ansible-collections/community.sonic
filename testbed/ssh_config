@@ -1,3 +1,5 @@
 Host sonic-vs
-  ProxyCommand socat - UNIX-CLIENT:/tmp/sonic-vs.sock
+  HostName 127.0.0.1
+  Port 5555
   StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null

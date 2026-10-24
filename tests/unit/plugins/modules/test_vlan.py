@@ -19,7 +19,7 @@ def test_check_address():
 def test_build_vlan_entry_present():
     key, val = vlan.build_vlan_entry(vlanid=3360, state='present', dhcp_servers=['127.0.0.1', '::1'])
     assert key == 'Vlan3360'
-    assert val.get('vlanid') == 3360
+    assert val.get('vlanid') == '3360'
     assert val.get('dhcp_servers') == ['127.0.0.1']
     assert val.get('dhcpv6_servers') == ['::1']
 

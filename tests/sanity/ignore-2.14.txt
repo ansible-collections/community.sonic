@@ -1,2 +1,0 @@
-testbed/docker.sh shebang
-testbed/start.sh shebang

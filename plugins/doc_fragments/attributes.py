@@ -13,6 +13,9 @@ class ModuleDocFragment(object):
     # Standard documentation fragment
     DOCUMENTATION = r'''
 options: {}
+requirements:
+    - Python >= 3.9 on the SONiC host.
+    - SONiC swsscommon Python bindings installed for the target interpreter.
 attributes:
     check_mode:
       description: Can run in C(check_mode) and return changed status prediction without modifying target.
