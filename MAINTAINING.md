@@ -111,7 +111,8 @@ then failed with a connection reset and an unexpected gzip EOF. The partial imag
 was removed. VM integration tests did not complete; no passing VM result is
 claimed. The downloader now bounds stalled transfers and atomically publishes
 only complete images. Re-run with a complete artifact or a retained image via
-`SONIC_IMAGE_URL` before release. No changes have been pushed or published.
+`SONIC_IMAGE_URL` before release. This was the local audit before the GitHub
+migration PR; no collection release has been published.
 
 ## GitHub Actions migration
 
@@ -134,3 +135,9 @@ reference. GitHub branch protection should require `check`, replacing the old
 GitHub integration jobs have been verified. Disabling the remote Azure pipeline
 and cancelling its already queued jobs requires Azure administrator access;
 removing a repository YAML file does not cancel already queued remote jobs.
+
+Both existing workflows were subsequently re-enabled and verified `active` via
+the GitHub API. The refresh and migration are published for review in
+[PR #18](https://github.com/ansible-collections/community.sonic/pull/18).
+Hosted results, rather than local VM attempts, determine whether the migration
+is ready to become the required merge gate.
