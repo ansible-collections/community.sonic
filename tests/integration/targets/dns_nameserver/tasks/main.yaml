@@ -1,0 +1,229 @@
+---
+# The virtual switch only has eth0 (QEMU user networking); the nameservers
+# configured here are documentation addresses that are never reached. The
+# original DNS_NAMESERVER table is restored at the end, even on failure.
+
+- name: Record the existing DNS_NAMESERVER table
+  community.sonic.get_entry:
+    table: DNS_NAMESERVER
+  register: dns_original
+
+- name: Output the original nameservers
+  ansible.builtin.debug:
+    msg: '{{ dns_original.value }}'
+
+- name: Run the DNS nameserver tests
+  block:
+    - name: Add an IPv6 nameserver in check mode
+      community.sonic.dns_nameserver:
+        address: 2001:db8::53
+      check_mode: true
+      diff: true
+      register: dns_check
+
+    - name: Check the module predicts the change without applying it
+      ansible.builtin.assert:
+        that:
+          - dns_check is changed
+          - "'2001:db8::53' in dns_check.diff.after"
+          - "'2001:db8::53' not in dns_check.diff.before"
+          - "'2001:db8::53' in dns_check.servers"
+
+    - name: Confirm check mode did not write to CONFIG_DB
+      community.sonic.get_entry:
+        table: DNS_NAMESERVER
+      register: dns_after_check
+      failed_when: "'2001:db8::53' in dns_after_check.value"
+
+    - name: Add an IPv6 nameserver
+      community.sonic.dns_nameserver:
+        address: 2001:db8::53
+      diff: true
+      register: dns_add_v6
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - dns_add_v6 is changed
+          - "'2001:db8::53' in dns_add_v6.servers"
+          - dns_add_v6.diff.after['2001:db8::53'] == {}
+
+    - name: Add the IPv6 nameserver again
+      community.sonic.dns_nameserver:
+        address: 2001:db8::53
+      diff: true
+      register: dns_add_v6_again
+
+    - name: Check adding a nameserver is idempotent
+      ansible.builtin.assert:
+        that:
+          - dns_add_v6_again is not changed
+          - dns_add_v6_again.diff.before == dns_add_v6_again.diff.after
+
+    - name: Add an IPv4 nameserver through the list form
+      community.sonic.dns_nameserver:
+        servers:
+          - 2001:db8::53
+          - 192.0.2.53
+      diff: true
+      register: dns_add_list
+
+    - name: Check only the missing nameserver was added
+      ansible.builtin.assert:
+        that:
+          - dns_add_list is changed
+          - "'2001:db8::53' in dns_add_list.diff.before"
+          - "'192.0.2.53' not in dns_add_list.diff.before"
+          - "'192.0.2.53' in dns_add_list.diff.after"
+          - "'192.0.2.53' in dns_add_list.servers"
+
+    - name: Read the DNS_NAMESERVER table
+      community.sonic.get_entry:
+        table: DNS_NAMESERVER
+      register: dns_table
+
+    - name: Output the DNS_NAMESERVER table
+      ansible.builtin.debug:
+        msg: '{{ dns_table.value }}'
+
+    - name: Check both nameservers are stored with an empty value
+      ansible.builtin.assert:
+        that:
+          - dns_table.value['2001:db8::53'] == {}
+          - dns_table.value['192.0.2.53'] == {}
+
+    - name: Check the nameserver shows up in the CLI
+      ansible.builtin.command: show dns nameserver
+      changed_when: false
+      register: dns_show
+      failed_when: false
+
+    - name: Output from the CLI
+      ansible.builtin.debug:
+        msg: '{{ dns_show.stdout_lines | default(dns_show.msg) }}'
+
+    - name: Wait for hostcfgd to regenerate /etc/resolv.conf
+      ansible.builtin.command: cat /etc/resolv.conf
+      changed_when: false
+      register: resolv_conf
+      until: >-
+        resolv_conf.stdout is search('(?m)^nameserver 2001:db8::53$')
+        and resolv_conf.stdout is search('(?m)^nameserver 192[.]0[.]2[.]53$')
+      retries: 12
+      delay: 5
+      failed_when: false
+
+    - name: Output /etc/resolv.conf
+      ansible.builtin.debug:
+        msg: '{{ resolv_conf.stdout_lines | default(resolv_conf.msg) }}'
+
+    - name: Check hostcfgd wrote the nameservers to /etc/resolv.conf
+      ansible.builtin.assert:
+        that:
+          - resolv_conf.stdout is search('(?m)^nameserver 2001:db8::53$')
+          - resolv_conf.stdout is search('(?m)^nameserver 192[.]0[.]2[.]53$')
+
+    - name: Make the list exclusive
+      community.sonic.dns_nameserver:
+        servers:
+          - 192.0.2.53
+          - 2001:db8::53
+        exclusive: true
+      diff: true
+      register: dns_exclusive
+
+    - name: Check the exclusive list is already in place
+      ansible.builtin.assert:
+        that:
+          - dns_exclusive is not changed
+          - dns_exclusive.servers | sort == ['192.0.2.53', '2001:db8::53']
+
+    - name: Drop the IPv4 nameserver with an exclusive list
+      community.sonic.dns_nameserver:
+        servers:
+          - 2001:db8::53
+        exclusive: true
+      diff: true
+      register: dns_exclusive_drop
+
+    - name: Check the IPv4 nameserver was removed
+      ansible.builtin.assert:
+        that:
+          - dns_exclusive_drop is changed
+          - "'192.0.2.53' in dns_exclusive_drop.diff.before"
+          - "'192.0.2.53' not in dns_exclusive_drop.diff.after"
+          - dns_exclusive_drop.servers == ['2001:db8::53']
+
+    - name: Reject a fourth nameserver
+      community.sonic.dns_nameserver:
+        servers:
+          - 2001:db8::53
+          - 192.0.2.1
+          - 192.0.2.2
+          - 192.0.2.3
+        exclusive: true
+      register: dns_too_many
+      failed_when: dns_too_many is not failed or 'at most 3' not in dns_too_many.msg
+
+    - name: Reject an invalid address
+      community.sonic.dns_nameserver:
+        address: not-an-address
+      register: dns_invalid
+      failed_when: dns_invalid is not failed or 'not a valid IPv4 or IPv6 address' not in dns_invalid.msg
+
+    - name: Remove the IPv6 nameserver in check mode
+      community.sonic.dns_nameserver:
+        address: 2001:db8::53
+        state: absent
+      check_mode: true
+      register: dns_remove_check
+
+    - name: Confirm check mode predicted the removal without applying it
+      community.sonic.get_entry:
+        table: DNS_NAMESERVER
+      register: dns_before_remove
+      failed_when: dns_remove_check is not changed or '2001:db8::53' not in dns_before_remove.value
+
+    - name: Remove the IPv6 nameserver
+      community.sonic.dns_nameserver:
+        address: 2001:db8::53
+        state: absent
+      diff: true
+      register: dns_remove
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - dns_remove is changed
+          - "'2001:db8::53' not in dns_remove.diff.after"
+          - "'2001:db8::53' not in dns_remove.servers"
+
+    - name: Remove the IPv6 nameserver again
+      community.sonic.dns_nameserver:
+        address: 2001:db8::53
+        state: absent
+      register: dns_remove_again
+
+    - name: Check removal is idempotent
+      ansible.builtin.assert:
+        that:
+          - dns_remove_again is not changed
+
+    - name: Confirm the nameserver is gone from CONFIG_DB
+      community.sonic.get_entry:
+        table: DNS_NAMESERVER
+      register: dns_after_remove
+      failed_when: "'2001:db8::53' in dns_after_remove.value"
+
+  always:
+    - name: Restore the original DNS_NAMESERVER table
+      community.sonic.dns_nameserver:
+        servers: '{{ dns_original.value | list }}'
+        exclusive: true
+      register: dns_restore
+
+    - name: Check the original nameservers are back
+      community.sonic.get_entry:
+        table: DNS_NAMESERVER
+      register: dns_restored
+      failed_when: dns_restored.value != dns_original.value
