@@ -69,18 +69,9 @@ interface:
 '''
 
 import ipaddress
-import traceback
-from ansible.module_utils.basic import AnsibleModule, missing_required_lib
-from ansible_collections.community.sonic.plugins.module_utils.entries import compare_entries
 
-try:
-    from swsscommon import swsscommon
-except ImportError:
-    HAS_SWSSCOMMON_LIBRARY = False
-    SWSSCOMMON_IMPORT_ERROR = traceback.format_exc()
-else:
-    HAS_SWSSCOMMON_LIBRARY = True
-    SWSSCOMMON_IMPORT_ERROR = None
+from ansible.module_utils.basic import AnsibleModule
+from ansible_collections.community.sonic.plugins.module_utils.config_db import ConfigDB
 
 
 def check_address(address):
@@ -137,26 +128,12 @@ def run_module():
         if not check_address(ds):
             module.fail_json(msg=f'dhcp server address {ds} is not a valid IP address')
 
-    if not HAS_SWSSCOMMON_LIBRARY:
-        module.fail_json(
-            msg=missing_required_lib('swsscommon'),
-            exception=SWSSCOMMON_IMPORT_ERROR)
-
-    config_db = swsscommon.ConfigDBConnector()
-    config_db.connect()
+    config_db = ConfigDB(module).connect()
 
     key, val = build_vlan_entry(**module.params)
-    cur_val = config_db.get_entry('VLAN', key)
-    changed = compare_entries(val, cur_val)
+    change = config_db.ensure_entry('VLAN', key, val, exclusive=True)
 
-    diff = {'before': cur_val or {}, 'after': val or {}}
-
-    if module.check_mode or not changed:
-        module.exit_json(changed=changed, interface=key, diff=diff)
-
-    config_db.set_entry('VLAN', key, val)
-
-    module.exit_json(changed=changed, interface=key, diff=diff)
+    module.exit_json(**change.result(interface=key))
 
 
 def main():

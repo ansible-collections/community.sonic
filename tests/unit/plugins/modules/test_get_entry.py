@@ -7,12 +7,16 @@ __metaclass__ = type
 from ansible_collections.community.sonic.plugins.modules import get_entry
 
 
-def test_fix_keys():
-    test_dict = {
-        'not_tuple': 'falafel',
-        ('is', 'tuple'): 'tahini',
-    }
-    new_dict = get_entry.fix_keys(test_dict)
-    assert new_dict.get('not_tuple') == 'falafel'
-    assert new_dict.get('is|tuple') == 'tahini'
-    assert ('is', 'tuple') not in new_dict
+def test_get_entry_returns_table_without_key(fake_swsscommon, run_module):
+    fake_swsscommon.seed({'VLAN': {'Vlan3600': {'vlanid': '3600'}}})
+    result = run_module(get_entry, dict(table='VLAN'))
+    assert result['value'] == {'Vlan3600': {'vlanid': '3600'}}
+    assert 'key' not in result
+    assert fake_swsscommon.writes == []
+
+
+def test_get_entry_check_mode_reads(fake_swsscommon, run_module):
+    fake_swsscommon.seed({'VLAN': {'Vlan3600': {'vlanid': '3600'}}})
+    result = run_module(get_entry, dict(table='VLAN', key='Vlan3600'), check_mode=True)
+    assert result['value'] == {'vlanid': '3600'}
+    assert result['key'] == 'Vlan3600'

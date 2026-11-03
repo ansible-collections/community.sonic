@@ -69,22 +69,12 @@ RETURN = r'''
 {}
 '''
 
-import traceback
-from ansible.module_utils.basic import AnsibleModule, missing_required_lib
-from ansible_collections.community.sonic.plugins.module_utils.entries import compare_entries
-
-try:
-    from swsscommon import swsscommon
-except ImportError:
-    HAS_SWSSCOMMON_LIBRARY = False
-    SWSSCOMMON_IMPORT_ERROR = traceback.format_exc()
-else:
-    HAS_SWSSCOMMON_LIBRARY = True
-    SWSSCOMMON_IMPORT_ERROR = None
+from ansible.module_utils.basic import AnsibleModule
+from ansible_collections.community.sonic.plugins.module_utils.config_db import ConfigDB, join_key
 
 
 def build_vlan_member_entry(vlanid, interface, state, tagged):
-    key = f'Vlan{vlanid}|{interface}'
+    key = join_key(f'Vlan{vlanid}', interface)
     # No reason to build the entry if state is absent
     if state == 'absent':
         return key, None
@@ -110,26 +100,12 @@ def run_module():
         required_if=(('state', 'present', ('tagged',), True),),
     )
 
-    if not HAS_SWSSCOMMON_LIBRARY:
-        module.fail_json(
-            msg=missing_required_lib('swsscommon'),
-            exception=SWSSCOMMON_IMPORT_ERROR)
-
-    config_db = swsscommon.ConfigDBConnector()
-    config_db.connect()
+    config_db = ConfigDB(module).connect()
 
     key, val = build_vlan_member_entry(**module.params)
-    cur_val = config_db.get_entry('VLAN_MEMBER', key)
-    changed = compare_entries(val, cur_val)
+    change = config_db.ensure_entry('VLAN_MEMBER', key, val, exclusive=True)
 
-    diff = {'before': cur_val or {}, 'after': val or {}}
-
-    if module.check_mode or not changed:
-        module.exit_json(changed=changed, diff=diff)
-
-    config_db.set_entry('VLAN_MEMBER', key, val)
-
-    module.exit_json(changed=changed, diff=diff)
+    module.exit_json(**change.result())
 
 
 def main():
