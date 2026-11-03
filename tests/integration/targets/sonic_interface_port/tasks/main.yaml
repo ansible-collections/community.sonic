@@ -149,7 +149,7 @@
     that:
       - disable_prediction is changed
       - after_check_mode.value.admin_status == 'up'
-      - "'admin_status' not in disable_prediction.diff.after"
+      - disable_prediction.diff.after.admin_status == 'down'
 
 - name: Disable the interface
   community.sonic.sonic_interface_port:
@@ -163,8 +163,15 @@
     enabled: false
   register: disabled_again
 
+- name: Read interface after disabling
+  community.sonic.get_entry:
+    table: PORT
+    key: Ethernet0
+  register: after_disable
+
 - name: Check disabling is idempotent
   ansible.builtin.assert:
     that:
       - disabled is changed
       - disabled_again is not changed
+      - after_disable.value.admin_status == 'down'

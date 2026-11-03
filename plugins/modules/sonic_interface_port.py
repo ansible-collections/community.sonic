@@ -48,7 +48,11 @@ options:
         required: false
         type: str
     enabled:
-        description: Admin status for the interface
+        description:
+            - Admin status for the interface.
+            - V(true) sets C(admin_status=up) and V(false) sets C(admin_status=down).
+            - A port without an admin status in CONFIG_DB is treated as down.
+            - Omitting this option leaves the admin status untouched.
         required: false
         type: bool
 
@@ -185,12 +189,12 @@ def mutate_state(port_table,
         changed = True
 
     if enabled is not None:
-        if enabled:
-            new_state['admin_status'] = 'up'
-        else:
-            new_state.pop('admin_status', None)
-        changed = changed or (
-            new_state.get('admin_status') != current_state.get('admin_status'))
+        wanted_admin_status = 'up' if enabled else 'down'
+        # A port without admin_status in CONFIG_DB is treated as down by
+        # SONiC (portmgrd default), so only write the field when it differs.
+        if current_state.get('admin_status', 'down') != wanted_admin_status:
+            new_state['admin_status'] = wanted_admin_status
+            changed = True
 
     if speed is not None:
         try:
