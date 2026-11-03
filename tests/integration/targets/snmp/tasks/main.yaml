@@ -1,0 +1,279 @@
+---
+# Only CONFIG_DB is exercised: the snmp container may be disabled on the
+# virtual switch and nothing reloads snmpd when the SNMP table changes. The
+# original SNMP|LOCATION and SNMP|CONTACT entries are restored at the end,
+# even on failure.
+
+- name: Record the existing SNMP table
+  community.sonic.get_entry:
+    table: SNMP
+  register: snmp_original
+
+- name: Output the original SNMP table
+  ansible.builtin.debug:
+    msg: '{{ snmp_original.value }}'
+
+- name: Remember the original location and contact
+  ansible.builtin.set_fact:
+    original_location: "{{ snmp_original.value.LOCATION.Location if 'LOCATION' in snmp_original.value else '' }}"
+    original_contact_name: "{{ (snmp_original.value.CONTACT | default({})) | dict2items | map(attribute='key') | first | default('') }}"
+    original_contact_email: "{{ (snmp_original.value.CONTACT | default({})) | dict2items | map(attribute='value') | first | default('') }}"
+
+- name: Run the snmp tests
+  block:
+    - name: Start from a clean slate
+      community.sonic.snmp:
+        location: cleanup
+        contact:
+          name: cleanup
+        state: absent
+
+    - name: Set the location and contact in check mode
+      community.sonic.snmp:
+        location: "Rack 12, Example DC"
+        contact:
+          name: noc
+          email: noc@example.net
+      check_mode: true
+      diff: true
+      register: snmp_check
+
+    - name: Read the SNMP table after the check mode run
+      community.sonic.get_entry:
+        table: SNMP
+      register: snmp_after_check
+
+    - name: Check mode predicts the change without writing
+      ansible.builtin.assert:
+        that:
+          - snmp_check is changed
+          - snmp_check.location == 'Rack 12, Example DC'
+          - "snmp_check.contact == {'name': 'noc', 'email': 'noc@example.net'}"
+          - snmp_check.diff.before == {}
+          - "snmp_check.diff.after == {'LOCATION': {'Location': 'Rack 12, Example DC'}, 'CONTACT': {'noc': 'noc@example.net'}}"
+          - "'LOCATION' not in snmp_after_check.value"
+          - "'CONTACT' not in snmp_after_check.value"
+
+    - name: Set the location and contact
+      community.sonic.snmp:
+        location: "Rack 12, Example DC"
+        contact:
+          name: noc
+          email: noc@example.net
+      diff: true
+      register: snmp_set
+
+    - name: Read the location entry
+      community.sonic.get_entry:
+        table: SNMP
+        key: LOCATION
+      register: location_entry
+
+    - name: Read the contact entry
+      community.sonic.get_entry:
+        table: SNMP
+        key: CONTACT
+      register: contact_entry
+
+    - name: Check the entries are stored the way the CLI stores them
+      ansible.builtin.assert:
+        that:
+          - snmp_set is changed
+          - snmp_set.diff == snmp_check.diff
+          - "location_entry.value == {'Location': 'Rack 12, Example DC'}"
+          - "contact_entry.value == {'noc': 'noc@example.net'}"
+
+    - name: Show the SNMP running configuration
+      ansible.builtin.command: show runningconfiguration snmp location
+      changed_when: false
+      failed_when: false
+      register: snmp_show
+
+    - name: Output from system command
+      ansible.builtin.debug:
+        msg: '{{ snmp_show.stdout_lines | default(snmp_show.msg) }}'
+
+    - name: Check that the CLI shows the location
+      ansible.builtin.assert:
+        that:
+          - snmp_show.stdout is search('Rack 12, Example DC')
+      when: snmp_show.rc == 0
+
+    - name: Set the location and contact again
+      community.sonic.snmp:
+        location: "Rack 12, Example DC"
+        contact:
+          name: noc
+          email: noc@example.net
+      diff: true
+      register: snmp_again
+
+    - name: Set the location and contact again in check mode
+      community.sonic.snmp:
+        location: "Rack 12, Example DC"
+        contact:
+          name: noc
+          email: noc@example.net
+      check_mode: true
+      diff: true
+      register: snmp_again_check
+
+    - name: Check the module is idempotent
+      ansible.builtin.assert:
+        that:
+          - snmp_again is not changed
+          - snmp_again.diff.before == snmp_again.diff.after
+          - snmp_again_check is not changed
+          - snmp_again_check.diff.before == snmp_again_check.diff.after
+
+    - name: Change only the location
+      community.sonic.snmp:
+        location: "Rack 13, Example DC"
+      diff: true
+      register: location_change
+
+    - name: Read the contact entry after the location change
+      community.sonic.get_entry:
+        table: SNMP
+        key: CONTACT
+      register: contact_after_location
+
+    - name: Check the contact was left alone
+      ansible.builtin.assert:
+        that:
+          - location_change is changed
+          - location_change.location == 'Rack 13, Example DC'
+          - "location_change.contact == {'name': 'noc', 'email': 'noc@example.net'}"
+          - location_change.diff.before.LOCATION.Location == 'Rack 12, Example DC'
+          - location_change.diff.after.LOCATION.Location == 'Rack 13, Example DC'
+          - "contact_after_location.value == {'noc': 'noc@example.net'}"
+
+    - name: Rename the contact
+      community.sonic.snmp:
+        contact:
+          name: ops
+          email: ops@example.net
+      diff: true
+      register: contact_change
+
+    - name: Read the contact entry after the rename
+      community.sonic.get_entry:
+        table: SNMP
+        key: CONTACT
+      register: contact_after_rename
+
+    - name: Check the old contact name is gone
+      ansible.builtin.assert:
+        that:
+          - contact_change is changed
+          - contact_change.location == 'Rack 13, Example DC'
+          - "contact_change.contact == {'name': 'ops', 'email': 'ops@example.net'}"
+          - "contact_after_rename.value == {'ops': 'ops@example.net'}"
+
+    - name: Try an invalid e-mail address
+      community.sonic.snmp:
+        contact:
+          name: ops
+          email: nobody
+      ignore_errors: true
+      register: invalid_email
+
+    - name: Try an empty location
+      community.sonic.snmp:
+        location: ""
+      ignore_errors: true
+      register: empty_location
+
+    - name: Check that invalid input fails clearly
+      ansible.builtin.assert:
+        that:
+          - invalid_email is failed
+          - "'is not a valid e-mail address' in invalid_email.msg"
+          - empty_location is failed
+          - "'location must not be empty' in empty_location.msg"
+
+    - name: Remove the location in check mode
+      community.sonic.snmp:
+        location: "Rack 13, Example DC"
+        state: absent
+      check_mode: true
+      diff: true
+      register: remove_location_check
+
+    - name: Remove the location
+      community.sonic.snmp:
+        location: "Rack 13, Example DC"
+        state: absent
+      diff: true
+      register: remove_location
+
+    - name: Read the SNMP table after removing the location
+      community.sonic.get_entry:
+        table: SNMP
+      register: snmp_after_remove_location
+
+    - name: Check only the location was removed
+      ansible.builtin.assert:
+        that:
+          - remove_location_check is changed
+          - remove_location_check.diff == remove_location.diff
+          - remove_location is changed
+          - remove_location.location is none
+          - "remove_location.contact == {'name': 'ops', 'email': 'ops@example.net'}"
+          - "remove_location.diff.after == {'CONTACT': {'ops': 'ops@example.net'}}"
+          - "'LOCATION' not in snmp_after_remove_location.value"
+          - "snmp_after_remove_location.value.CONTACT == {'ops': 'ops@example.net'}"
+
+    - name: Remove the location again
+      community.sonic.snmp:
+        location: "Rack 13, Example DC"
+        state: absent
+      diff: true
+      register: remove_location_again
+
+    - name: Remove the contact
+      community.sonic.snmp:
+        contact:
+          name: ops
+        state: absent
+      diff: true
+      register: remove_contact
+
+    - name: Read the SNMP table after removing the contact
+      community.sonic.get_entry:
+        table: SNMP
+      register: snmp_after_remove_contact
+
+    - name: Check removal is idempotent and the contact is gone
+      ansible.builtin.assert:
+        that:
+          - remove_location_again is not changed
+          - remove_location_again.diff.before == remove_location_again.diff.after
+          - remove_contact is changed
+          - remove_contact.contact is none
+          - remove_contact.diff.after == {}
+          - "'CONTACT' not in snmp_after_remove_contact.value"
+
+  always:
+    - name: Restore the original SNMP location
+      community.sonic.snmp:
+        location: "{{ original_location | default('none', true) }}"
+        state: "{{ 'present' if original_location else 'absent' }}"
+
+    - name: Restore the original SNMP contact
+      community.sonic.snmp:
+        contact:
+          name: "{{ original_contact_name | default('none', true) }}"
+          email: "{{ original_contact_email | default(omit, true) }}"
+        state: "{{ 'present' if original_contact_name else 'absent' }}"
+
+    - name: Read the SNMP table after the restore
+      community.sonic.get_entry:
+        table: SNMP
+      register: snmp_restored
+
+    - name: Check that the original entries are back
+      ansible.builtin.assert:
+        that:
+          - snmp_restored.value.LOCATION | default({}) == snmp_original.value.LOCATION | default({})
+          - snmp_restored.value.CONTACT | default({}) == snmp_original.value.CONTACT | default({})

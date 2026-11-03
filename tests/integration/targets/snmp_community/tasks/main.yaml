@@ -1,0 +1,186 @@
+---
+# Only CONFIG_DB is exercised: the snmp container may be disabled on the
+# virtual switch and nothing reloads snmpd when SNMP_COMMUNITY changes. The
+# test community is removed at the end, even on failure; other communities
+# (the image ships `public`) are left alone.
+
+- name: Record the existing SNMP_COMMUNITY table
+  community.sonic.get_entry:
+    table: SNMP_COMMUNITY
+  register: communities_original
+
+- name: Run the snmp_community tests
+  vars:
+    test_community: ansible-test-c0mmun1ty
+  block:
+    - name: Start from a clean slate
+      community.sonic.snmp_community:
+        name: "{{ test_community }}"
+        state: absent
+
+    - name: Add a read-only community in check mode
+      community.sonic.snmp_community:
+        name: "{{ test_community }}"
+        type: RO
+      check_mode: true
+      diff: true
+      register: community_check
+
+    - name: Read the community entry after the check mode run
+      community.sonic.get_entry:
+        table: SNMP_COMMUNITY
+        key: "{{ test_community }}"
+      register: community_after_check
+
+    - name: Check mode predicts the change without writing or revealing the community
+      ansible.builtin.assert:
+        that:
+          - community_check is changed
+          - community_check.type == 'RO'
+          - "community_check.diff == {'before': {}, 'after': {'TYPE': 'RO'}}"
+          - test_community not in (community_check | to_json)
+          - community_after_check.value == {}
+
+    - name: Add a read-only community
+      community.sonic.snmp_community:
+        name: "{{ test_community }}"
+        type: RO
+      diff: true
+      register: community_add
+
+    - name: Read the community entry
+      community.sonic.get_entry:
+        table: SNMP_COMMUNITY
+        key: "{{ test_community }}"
+      register: community_entry
+
+    - name: Check the entry is stored the way the CLI stores it
+      ansible.builtin.assert:
+        that:
+          - community_add is changed
+          - community_add.type == 'RO'
+          - community_add.diff == community_check.diff
+          - test_community not in (community_add | to_json)
+          - "community_entry.value == {'TYPE': 'RO'}"
+
+    - name: Add the community again
+      community.sonic.snmp_community:
+        name: "{{ test_community }}"
+        type: RO
+      diff: true
+      register: community_again
+
+    - name: Add the community again in check mode
+      community.sonic.snmp_community:
+        name: "{{ test_community }}"
+      check_mode: true
+      diff: true
+      register: community_again_check
+
+    - name: Check the module is idempotent and RO is the default type
+      ansible.builtin.assert:
+        that:
+          - community_again is not changed
+          - community_again.diff.before == community_again.diff.after
+          - community_again_check is not changed
+          - community_again_check.diff.before == community_again_check.diff.after
+
+    - name: Make the community read-write
+      community.sonic.snmp_community:
+        name: "{{ test_community }}"
+        type: RW
+      diff: true
+      register: community_rw
+
+    - name: Read the community entry after the type change
+      community.sonic.get_entry:
+        table: SNMP_COMMUNITY
+        key: "{{ test_community }}"
+      register: community_entry_rw
+
+    - name: Check the type was changed
+      ansible.builtin.assert:
+        that:
+          - community_rw is changed
+          - community_rw.type == 'RW'
+          - "community_rw.diff == {'before': {'TYPE': 'RO'}, 'after': {'TYPE': 'RW'}}"
+          - "community_entry_rw.value == {'TYPE': 'RW'}"
+
+    - name: Try a community string that is too long
+      community.sonic.snmp_community:
+        name: this-community-string-is-thirty-three
+      ignore_errors: true
+      register: too_long
+
+    - name: Try a community string with a forbidden character
+      community.sonic.snmp_community:
+        name: "{{ test_community }}@host"
+      ignore_errors: true
+      register: forbidden
+
+    - name: Check that invalid community strings fail clearly without being echoed
+      ansible.builtin.assert:
+        that:
+          - too_long is failed
+          - too_long.msg == 'the community string must be 1 to 32 characters long'
+          - forbidden is failed
+          - forbidden.msg == 'the community string must not contain "@" or ":"'
+          - test_community not in (forbidden | to_json)
+
+    - name: Remove the community in check mode
+      community.sonic.snmp_community:
+        name: "{{ test_community }}"
+        state: absent
+      check_mode: true
+      diff: true
+      register: community_remove_check
+
+    - name: Remove the community
+      community.sonic.snmp_community:
+        name: "{{ test_community }}"
+        state: absent
+      diff: true
+      register: community_remove
+
+    - name: Read the community entry after the removal
+      community.sonic.get_entry:
+        table: SNMP_COMMUNITY
+        key: "{{ test_community }}"
+      register: community_entry_removed
+
+    - name: Remove the community again
+      community.sonic.snmp_community:
+        name: "{{ test_community }}"
+        state: absent
+      diff: true
+      register: community_remove_again
+
+    - name: Check the community is gone and removal is idempotent
+      ansible.builtin.assert:
+        that:
+          - community_remove_check is changed
+          - community_remove_check.diff == community_remove.diff
+          - community_remove is changed
+          - "community_remove.diff == {'before': {'TYPE': 'RW'}, 'after': {}}"
+          - "'type' not in community_remove"
+          - community_entry_removed.value == {}
+          - community_remove_again is not changed
+          - "community_remove_again.diff == {'before': {}, 'after': {}}"
+
+  always:
+    - name: Remove the test community
+      community.sonic.snmp_community:
+        name: "{{ test_community }}"
+        state: absent
+
+    - name: Read the SNMP_COMMUNITY table after the cleanup
+      community.sonic.get_entry:
+        table: SNMP_COMMUNITY
+      register: communities_after
+
+    - name: Check that the other communities are untouched
+      ansible.builtin.assert:
+        that:
+          - >-
+            communities_after.value
+            == communities_original.value | dict2items | rejectattr('key', '==', test_community) | items2dict
