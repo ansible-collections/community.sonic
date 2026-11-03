@@ -211,4 +211,3 @@ def test_exclusive_with_absent_fails(fake_swsscommon, run_module):
     result = run_module(dns_nameserver, dict(servers=[V6], exclusive=True, state='absent'), expect_failure=True)
     assert 'exclusive=true cannot be combined with state=absent' in result['msg']
     assert fake_swsscommon.writes == []
-
