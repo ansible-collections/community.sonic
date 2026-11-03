@@ -19,6 +19,13 @@ jobs:
   tests:
     name: ${{ matrix.test }} (Ⓐ${{ matrix.ansible }})
     runs-on: ubuntu-latest
+    # devel is informational: ansible-test devel cannot start its controller
+    # container on current GitHub-hosted runners (kernel 7.0.0-1017-azure), see
+    # https://github.com/ansible/ansible/issues/87731. The job still runs on
+    # every push, PR and daily schedule, but its failure does not fail `check`.
+    # Drop continue-on-error once the upstream issue is closed and devel passes
+    # again; see MAINTAINING.md.
+    continue-on-error: ${{ matrix.ansible == 'devel' }}
     strategy:
       fail-fast: false
       matrix:
@@ -102,6 +109,9 @@ jobs:
           fi
 
   # Keep the existing required status check stable for branch protection.
+  # Jobs with continue-on-error (the devel sanity and units jobs above) report
+  # `success` to `needs`, so only the stable sanity, units and integration
+  # results gate this check.
   check:
     if: always()
     needs: [tests, integration]

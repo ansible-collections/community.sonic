@@ -1,0 +1,3 @@
+---
+trivial:
+  - CI - the ansible-core ``devel`` sanity and unit jobs are informational until ansible-test devel can start its controller container on GitHub-hosted runners again (https://github.com/ansible/ansible/issues/87731).
