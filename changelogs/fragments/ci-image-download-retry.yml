@@ -1,0 +1,3 @@
+---
+trivial:
+  - CI - the virtual-switch image download retries and resumes after a connection reset instead of failing the integration job.
