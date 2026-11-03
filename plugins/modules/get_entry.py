@@ -80,7 +80,6 @@ def run_module():
 
     table = module.params.get('table')
     key = module.params.get('key', None)
-    # ConfigDB joins compound (tuple) keys into 'a|b' strings so the value can be JSON encoded.
     if key is None:
         value = config_db.get_table(table)
     else:
