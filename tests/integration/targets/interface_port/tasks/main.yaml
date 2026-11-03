@@ -1,6 +1,6 @@
 ---
 - name: Set port properties
-  community.sonic.sonic_interface_port:
+  community.sonic.interface_port:
     interface: Ethernet0
     description: This is the uplink!
     speed: 1G
@@ -31,7 +31,7 @@
       - "'This is the uplink' in check1.stdout"
 
 - name: Remove port description
-  community.sonic.sonic_interface_port:
+  community.sonic.interface_port:
     interface: Ethernet0
   diff: true
   register: result2
@@ -77,7 +77,7 @@
       - check3.value.admin_status == 'up'
 
 - name: Set port properties - 100G mode
-  community.sonic.sonic_interface_port:
+  community.sonic.interface_port:
     interface: Ethernet0
     description: This is the uplink!
     speed: 100G
@@ -104,7 +104,7 @@
       - check4.value.fec == 'rs'
 
 - name: Set port properties - 40G mode
-  community.sonic.sonic_interface_port:
+  community.sonic.interface_port:
     interface: Ethernet0
     description: This is the uplink!
     speed: 40G
@@ -131,7 +131,7 @@
 
 
 - name: Predict disabling the interface
-  community.sonic.sonic_interface_port:
+  community.sonic.interface_port:
     interface: Ethernet0
     enabled: false
   check_mode: true
@@ -152,13 +152,13 @@
       - disable_prediction.diff.after.admin_status == 'down'
 
 - name: Disable the interface
-  community.sonic.sonic_interface_port:
+  community.sonic.interface_port:
     interface: Ethernet0
     enabled: false
   register: disabled
 
 - name: Disable the interface again
-  community.sonic.sonic_interface_port:
+  community.sonic.interface_port:
     interface: Ethernet0
     enabled: false
   register: disabled_again
@@ -175,3 +175,32 @@
       - disabled is changed
       - disabled_again is not changed
       - after_disable.value.admin_status == 'down'
+
+- name: Call the module through its deprecated sonic_interface_port name
+  community.sonic.sonic_interface_port:
+    interface: Ethernet0
+    description: Set through the deprecated module name
+  register: deprecated_name
+
+- name: Read interface after using the deprecated name
+  community.sonic.get_entry:
+    table: PORT
+    key: Ethernet0
+  register: after_deprecated_name
+
+- name: Check the deprecated name redirects to interface_port
+  ansible.builtin.assert:
+    that:
+      - deprecated_name is changed
+      - deprecated_name.interface == 'Ethernet0'
+      - after_deprecated_name.value.description == 'Set through the deprecated module name'
+
+- name: Clear the description set through the deprecated name
+  community.sonic.interface_port:
+    interface: Ethernet0
+  register: cleared_after_deprecated_name
+
+- name: Check the description is cleared again
+  ansible.builtin.assert:
+    that:
+      - cleared_after_deprecated_name is changed

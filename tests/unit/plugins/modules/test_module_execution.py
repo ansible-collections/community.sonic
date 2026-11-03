@@ -9,7 +9,7 @@ __metaclass__ = type
 import pytest
 
 from ansible_collections.community.sonic.plugins.module_utils import config_db
-from ansible_collections.community.sonic.plugins.modules import get_entry, sonic_interface_port, vlan, vlan_member
+from ansible_collections.community.sonic.plugins.modules import get_entry, interface_port, vlan, vlan_member
 
 
 @pytest.mark.parametrize('module,params,table,key,current,wanted,extra', (
@@ -26,9 +26,9 @@ from ansible_collections.community.sonic.plugins.modules import get_entry, sonic
      'VLAN_MEMBER', 'Vlan42|Ethernet0', {'tagging_mode': 'tagged'}, {'tagging_mode': 'untagged'}, {}),
     (vlan_member, dict(vlanid=42, interface='Ethernet0', state='absent'),
      'VLAN_MEMBER', 'Vlan42|Ethernet0', {'tagging_mode': 'tagged'}, None, {}),
-    (sonic_interface_port, dict(interface='Ethernet0', enabled=False),
+    (interface_port, dict(interface='Ethernet0', enabled=False),
      'PORT', 'Ethernet0', {'speed': '10000', 'admin_status': 'up'}, {'speed': '10000', 'admin_status': 'down'}, {'interface': 'Ethernet0'}),
-    (sonic_interface_port, dict(interface='QSFP1', description='uplink', speed='100G', fec='rs'),
+    (interface_port, dict(interface='QSFP1', description='uplink', speed='100G', fec='rs'),
      'PORT', 'Ethernet0', {'alias': 'QSFP1', 'speed': '10000'},
      {'alias': 'QSFP1', 'speed': '100000', 'description': 'uplink', 'fec': 'rs'}, {'interface': 'Ethernet0'}),
 ))
@@ -57,9 +57,9 @@ def test_module_changes_and_diff(fake_swsscommon, run_module, module, params, ta
         assert fake_swsscommon.has_entry(table, key) is (wanted is not None)
 
 
-def test_sonic_interface_port_clears_description_through_appl_db(fake_swsscommon, run_module):
+def test_interface_port_clears_description_through_appl_db(fake_swsscommon, run_module):
     fake_swsscommon.seed({'PORT': {'Ethernet0': {'alias': 'QSFP1', 'speed': '10000', 'description': 'old'}}})
-    result = run_module(sonic_interface_port, dict(interface='QSFP1'))
+    result = run_module(interface_port, dict(interface='QSFP1'))
     assert result['changed'] is True
     assert result['interface'] == 'Ethernet0'
     assert fake_swsscommon.writes == [
@@ -68,16 +68,16 @@ def test_sonic_interface_port_clears_description_through_appl_db(fake_swsscommon
     ]
 
 
-def test_sonic_interface_port_unknown_interface(fake_swsscommon, run_module):
+def test_interface_port_unknown_interface(fake_swsscommon, run_module):
     fake_swsscommon.seed({'PORT': {'Ethernet0': {'alias': 'QSFP1'}}})
-    result = run_module(sonic_interface_port, dict(interface='QSFP9'), expect_failure=True)
+    result = run_module(interface_port, dict(interface='QSFP9'), expect_failure=True)
     assert result['msg'] == 'could not find interface "QSFP9"'
     assert fake_swsscommon.writes == []
 
 
-def test_sonic_interface_port_invalid_speed(fake_swsscommon, run_module):
+def test_interface_port_invalid_speed(fake_swsscommon, run_module):
     fake_swsscommon.seed({'PORT': {'Ethernet0': {}}})
-    result = run_module(sonic_interface_port, dict(interface='Ethernet0', speed='fast'), expect_failure=True)
+    result = run_module(interface_port, dict(interface='Ethernet0', speed='fast'), expect_failure=True)
     assert result['msg'] == 'could not parse speed "fast"'
 
 
@@ -117,7 +117,7 @@ def test_get_entry_key(fake_swsscommon, run_module):
 @pytest.mark.parametrize('module,params', (
     (vlan, dict(vlanid=42)),
     (vlan_member, dict(vlanid=42, interface='Ethernet0', tagged=True)),
-    (sonic_interface_port, dict(interface='Ethernet0')),
+    (interface_port, dict(interface='Ethernet0')),
     (get_entry, dict(table='PORT')),
 ))
 def test_missing_swsscommon(monkeypatch, run_module, module, params):
