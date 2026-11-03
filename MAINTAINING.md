@@ -27,34 +27,31 @@ were checked: this collection does not import `ansible.module_utils.six`,
 | Upstream request | Repository response | Remaining verification |
 | --- | --- | --- |
 | Sanity and existing tests for all supported core branches | GitHub sanity, unit, and integration matrices cover 2.19, 2.20, 2.21; runtime minimum is 2.19 | Run hosted GitHub checks before release |
-| [March 2026: test `devel` or `milestone`](https://forum.ansible.com/t/action-required-for-ansible-package-included-collections-ci-add-test-runs-against-devel-or-milestone-branch-of-ansible-core/45599) | `devel` is in the GitHub test and integration matrices; daily schedules run even without commits. The `devel` sanity and unit jobs are informational (see below) | Monitor failures and update the matrix as branches reach EOL |
+| [March 2026: test `devel` or `milestone`](https://forum.ansible.com/t/action-required-for-ansible-package-included-collections-ci-add-test-runs-against-devel-or-milestone-branch-of-ansible-core/45599) | `devel` is in the GitHub test and integration matrices; daily schedules run even without commits. The `devel` sanity and unit jobs are skipped (see below) | Monitor failures and update the matrix as branches reach EOL |
 | Current Ansible Forum communication links | README and contributor guide link to Get Help and collection development, using the existing `collections` tag | Maintainers should join the group and subscribe to news |
 | [Check Azure is still working (#16)](https://github.com/ansible-collections/community.sonic/issues/16) | Azure configuration retired; VM integration moves to GitHub-hosted KVM runners with daily runs | Verify a passing GitHub integration run and retire the old required Azure status |
 | Retired Debian Bullseye test images | Testbed uses Debian Trixie with a controller Python suitable for supported core releases | Build and boot the virtual switch on the integration runner |
 | No unexplained sanity ignores | Fixed script shebangs and removed obsolete ignores | Keep new ignores justified individually if ever needed |
 | Collection docs and packaging | Fixed template links, documented target requirements, lint/build checks in CI, excluded CI/editor files from artifacts | Check the release artifact and Galaxy metadata |
 
-### `devel` sanity and unit jobs are informational (since 2026-11-03)
+### `devel` sanity and unit jobs are skipped (since 2026-11-03)
 
-The `devel` sanity and unit jobs run with `continue-on-error` in
-`.github/workflows/ansible-test.yml`, so their failure does not fail the
-required `check` status. The stable branches (2.19, 2.20, 2.21) and all
-integration jobs, including `devel`, remain required. Reason: since
-2026-10-28 ansible-test `devel` (and 2.22) cannot start its controller
-container on GitHub-hosted `ubuntu-24.04` runners whose image ships kernel
-`7.0.0-1017-azure`; the `nsenter ... mount -o remount,rw /sys/fs/cgroup/ &&
-pkill sleep` init step fails with exit status 1. This is tracked upstream in
+The `devel` branch of ansible-core is not in the sanity/unit matrix of
+`.github/workflows/ansible-test.yml`. Since 2026-10-28 ansible-test `devel`
+(and 2.22) cannot start its controller container on GitHub-hosted
+`ubuntu-24.04` runners: the `nsenter ... mount -o remount,rw /sys/fs/cgroup/`
+init step fails with exit status 1. This is tracked upstream in
 [ansible/ansible#87731](https://github.com/ansible/ansible/issues/87731) and
 [ansible-test-gh-action#138](https://github.com/ansible-community/ansible-test-gh-action/issues/138);
-it is not caused by this collection. Example:
-[run 41589121109](https://github.com/ansible-collections/community.sonic/actions/runs/41589121109).
+it is not caused by this collection. The jobs were first made informational
+(`continue-on-error`), but a job that runs and fails still shows a red mark on
+every pull request and scheduled run, which confuses contributors, so they are
+skipped instead. The `devel` integration job still runs: it uses our own
+testbed container and is unaffected.
 
-The `devel` jobs still run on every push, pull request and daily schedule, so a
-recovery shows up as green `devel` jobs in the scheduled runs. Flip them back to
-required by removing the `continue-on-error` line once the upstream issue is
-closed and the scheduled `devel` jobs have passed for a few consecutive days.
-When ansible-core 2.22 enters the matrix, check that it is not affected before
-adding it as a required job.
+Re-add `devel` to the sanity/unit matrix once the upstream issue is closed and
+a manual `workflow_dispatch` run with it passes. When ansible-core 2.22 enters
+the matrix, check that it is not affected before adding it.
 
 Initial infrastructure audit on 2026-10-24 (before GitHub migration):
 
