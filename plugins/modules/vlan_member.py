@@ -31,7 +31,9 @@ options:
         type: str
         choices: [present, absent]
     interface:
-        description: The interface to attach to the VLAN
+        description:
+          - The interface to attach to the VLAN, a port by name (C(Ethernet0)) or alias (C(QSFP1)),
+            or a PortChannel (C(PortChannel3)).
         required: true
         type: str
     tagged:
@@ -63,14 +65,29 @@ EXAMPLES = r'''
     vlanid: 3600
     interface: Ethernet90
     tagged: false
+
+# Add a PortChannel
+- name: PortChannel VLAN membership
+  community.sonic.vlan_member:
+    vlanid: 3600
+    interface: PortChannel3
+    tagged: true
 '''
 
 RETURN = r'''
-{}
+interface:
+    description: The canonical name of the member interface, resolved from an alias when one was given.
+    type: str
+    returned: always
+    sample: Ethernet90
 '''
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible_collections.community.sonic.plugins.module_utils.config_db import ConfigDB, join_key
+from ansible_collections.community.sonic.plugins.module_utils.config_db import (
+    ConfigDB, ConfigDBError, UnsupportedInterfaceError, interface_kind, join_key)
+
+#: Interface kinds that can be VLAN members.
+MEMBER_KINDS = ('Ethernet', 'PortChannel')
 
 
 def build_vlan_member_entry(vlanid, interface, state, tagged):
@@ -102,10 +119,18 @@ def run_module():
 
     config_db = ConfigDB(module).connect()
 
-    key, val = build_vlan_member_entry(**module.params)
-    change = config_db.ensure_entry('VLAN_MEMBER', key, val, exclusive=True)
+    params = dict(module.params)
+    try:
+        params['interface'] = config_db.resolve_interface(params['interface'])
+        if interface_kind(params['interface']) not in MEMBER_KINDS:
+            raise UnsupportedInterfaceError(
+                'interface "%s" cannot be a VLAN member; expected a port or PortChannel' % params['interface'])
+        key, val = build_vlan_member_entry(**params)
+        change = config_db.ensure_entry('VLAN_MEMBER', key, val, exclusive=True)
+    except ConfigDBError as e:
+        module.fail_json(msg=str(e))
 
-    module.exit_json(**change.result())
+    module.exit_json(**change.result(interface=params['interface']))
 
 
 def main():
