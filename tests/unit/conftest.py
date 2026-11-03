@@ -11,6 +11,11 @@
     ``fake_swsscommon.seed({'VLAN': {'Vlan42': {'vlanid': '42'}}})`` and assert
     on ``fake_swsscommon.writes`` or ``fake_swsscommon.get_entry(...)``.
 
+``spm``
+    A :class:`FakeSpm` wired into ``AnsibleModule.run_command``/``get_bin_path``
+    and ``module_utils.package_manager`` with a ``packages.json`` under
+    ``tmp_path``; emulates ``sonic-package-manager`` for the package modules.
+
 ``run_module``
     ``run_module(module, params, check_mode=False, expect_failure=False)``
     runs a module's ``run_module()`` with the given parameters and returns the
@@ -27,7 +32,8 @@ import pytest
 from ansible.module_utils import basic
 from ansible.module_utils.testing import patch_module_args
 
-from ansible_collections.community.sonic.plugins.module_utils import config_db
+from ansible_collections.community.sonic.plugins.module_utils import config_db, package_manager
+from ansible_collections.community.sonic.tests.unit.fake_spm import FakeSpm
 from ansible_collections.community.sonic.tests.unit.fake_swsscommon import FakeSwssCommon
 
 
@@ -65,6 +71,17 @@ def fake_swsscommon(monkeypatch):
     monkeypatch.setattr(config_db, 'swsscommon', fake)
     monkeypatch.setattr(config_db, 'HAS_SWSSCOMMON', True)
     monkeypatch.setattr(config_db, 'SWSSCOMMON_IMPORT_ERROR', None)
+    return fake
+
+
+@pytest.fixture
+def spm(monkeypatch, tmp_path):
+    """Fake ``sonic-package-manager`` with a ``packages.json`` database under ``tmp_path``."""
+    fake = FakeSpm(tmp_path / 'packages.json')
+    monkeypatch.setattr(basic.AnsibleModule, 'get_bin_path', fake.get_bin_path)
+    monkeypatch.setattr(basic.AnsibleModule, 'run_command', fake.run_command)
+    monkeypatch.setattr(package_manager, 'DATABASE_PATH', fake.database_path)
+    monkeypatch.setattr(package_manager.os, 'geteuid', lambda: fake.euid)
     return fake
 
 

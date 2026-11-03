@@ -1,0 +1,383 @@
+---
+# package drives `sonic-package-manager install/uninstall`, which needs root:
+# the integration inventory connects as admin, who has passwordless sudo on
+# SONiC, so the writing tasks run with become. Reading the state (idempotent
+# runs, check mode) is done as admin on purpose.
+#
+# CI has no registry access, so the test installs from image tarballs built on
+# the virtual switch itself: an empty layer imported with the
+# `com.azure.sonic.manifest` label SPM reads its manifest from, saved with
+# `docker save`. The feature stays disabled, so the (empty) container is never
+# started. Two versions are built to exercise upgrade, downgrade and `latest`.
+- name: Test package
+  vars:
+    pkg: cs-test-pkg
+    workdir: /tmp/cs-test-pkg
+    tarball_100: '{{ workdir }}/{{ pkg }}-1.0.0.tar'
+    tarball_101: '{{ workdir }}/{{ pkg }}-1.0.1.tar'
+    manifest:
+      version: "1.0.0"
+      package:
+        name: '{{ pkg }}'
+        description: community.sonic integration test package
+      service:
+        name: '{{ pkg }}'
+        host-service: true
+        asic-service: false
+  block:
+    - name: Create the working directory
+      ansible.builtin.file:
+        path: '{{ workdir }}'
+        state: directory
+        mode: "0755"
+
+    - name: Write the package manifests
+      ansible.builtin.copy:
+        dest: '{{ workdir }}/manifest-{{ item }}.json'
+        content: '{{ manifest | combine({"package": {"version": item}}, recursive=true) | to_json }}'
+        mode: "0644"
+      loop: ['1.0.0', '1.0.1']
+
+    - name: Build the package image tarballs
+      ansible.builtin.shell: |
+        set -e
+        tar cf '{{ workdir }}/empty.tar' -T /dev/null
+        docker import --change "LABEL com.azure.sonic.manifest='$(cat '{{ workdir }}/manifest-{{ item }}.json')'" \
+          '{{ workdir }}/empty.tar' '{{ pkg }}:{{ item }}'
+        docker save -o '{{ workdir }}/{{ pkg }}-{{ item }}.tar' '{{ pkg }}:{{ item }}'
+        docker rmi '{{ pkg }}:{{ item }}'
+      args:
+        executable: /bin/bash
+      become: true
+      changed_when: true
+      loop: ['1.0.0', '1.0.1']
+
+    - name: Read the manifest back through sonic-package-manager
+      ansible.builtin.command: sonic-package-manager show package manifest --from-tarball '{{ tarball_100 }}'
+      become: true
+      changed_when: false
+      register: show_manifest
+
+    - name: Output from sonic-package-manager show package manifest
+      ansible.builtin.debug:
+        msg: '{{ show_manifest.stdout }}'
+
+    - name: Check that SPM accepts the test image
+      vars:
+        parsed: '{{ show_manifest.stdout | from_json }}'
+      ansible.builtin.assert:
+        that:
+          - parsed.package.name == pkg
+          - parsed.package.version == '1.0.0'
+
+    - name: Install the package in check mode
+      community.sonic.package:
+        name: '{{ pkg }}'
+        source: '{{ tarball_100 }}'
+        version: "1.0.0"
+        skip_host_plugins: true
+      check_mode: true
+      diff: true
+      register: install_check
+
+    - name: List packages after check mode
+      ansible.builtin.command: sonic-package-manager list
+      changed_when: false
+      register: list_after_check
+
+    - name: Check mode reports the install without installing anything
+      ansible.builtin.assert:
+        that:
+          - install_check is changed
+          - install_check.installed
+          - install_check.version == '1.0.0'
+          - install_check.status == 'Installed'
+          - install_check.diff.before.installed == false
+          - install_check.commands == []
+          - pkg not in list_after_check.stdout
+
+    - name: Installing without root privileges fails with a helpful message
+      community.sonic.package:
+        name: '{{ pkg }}'
+        source: '{{ tarball_100 }}'
+        version: "1.0.0"
+      register: no_root
+      ignore_errors: true
+
+    - name: Check the failure message
+      ansible.builtin.assert:
+        that:
+          - no_root is failed
+          - "'become: true' in no_root.msg"
+
+    - name: Install the package from the tarball
+      community.sonic.package:
+        name: '{{ pkg }}'
+        source: '{{ tarball_100 }}'
+        version: "1.0.0"
+        skip_host_plugins: true
+      become: true
+      diff: true
+      register: install
+
+    - name: Output from package
+      ansible.builtin.debug:
+        msg: '{{ install }}'
+
+    - name: List packages
+      ansible.builtin.command: sonic-package-manager list
+      changed_when: false
+      register: list_after_install
+
+    - name: Output from sonic-package-manager list
+      ansible.builtin.debug:
+        msg: '{{ list_after_install.stdout }}'
+
+    - name: Read the FEATURE entry
+      community.sonic.get_entry:
+        table: FEATURE
+        key: '{{ pkg }}'
+      register: feature
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - install is changed
+          - install.name == pkg
+          - install.installed
+          - install.version == '1.0.0'
+          - install.repository is not none
+          - install.status == 'Installed'
+          - install.commands | length == 1
+          - "'install -y --skip-host-plugins --from-tarball' in install.commands[0]"
+          - install.diff.before == install_check.diff.before
+          - install.diff.after.version == '1.0.0'
+          - list_after_install.stdout is search('(?m)^' ~ pkg ~ '\s+.*\s1[.]0[.]0\s+Installed')
+          - feature.value.state == 'disabled'
+
+    - name: Install the same package again
+      community.sonic.package:
+        name: '{{ pkg }}'
+        source: '{{ tarball_100 }}'
+        version: "1.0.0"
+      become: true
+      register: install_again
+
+    - name: Install the same package again without a version
+      community.sonic.package:
+        name: '{{ pkg }}'
+        source: '{{ tarball_100 }}'
+      register: install_no_version
+
+    - name: Install the same package again in check mode
+      community.sonic.package:
+        name: '{{ pkg }}'
+        version: "1.0.0"
+      check_mode: true
+      register: install_check_again
+
+    - name: Check that installing is idempotent
+      ansible.builtin.assert:
+        that:
+          - install_again is not changed
+          - install_again.commands == []
+          - install_again.diff.before == install_again.diff.after
+          - install_no_version is not changed
+          - install_check_again is not changed
+          - install_check_again.version == '1.0.0'
+
+    - name: Upgrade the package from the second tarball
+      community.sonic.package:
+        name: '{{ pkg }}'
+        source: '{{ tarball_101 }}'
+        version: "1.0.1"
+        skip_host_plugins: true
+      become: true
+      diff: true
+      register: upgrade
+
+    - name: List packages after the upgrade
+      ansible.builtin.command: sonic-package-manager list
+      changed_when: false
+      register: list_after_upgrade
+
+    - name: Check the upgrade
+      ansible.builtin.assert:
+        that:
+          - upgrade is changed
+          - upgrade.version == '1.0.1'
+          - upgrade.diff.before.version == '1.0.0'
+          - upgrade.diff.after.version == '1.0.1'
+          - list_after_upgrade.stdout is search('(?m)^' ~ pkg ~ '\s+.*\s1[.]0[.]1\s+Installed')
+
+    - name: Downgrading without allow_downgrade fails
+      community.sonic.package:
+        name: '{{ pkg }}'
+        source: '{{ tarball_100 }}'
+        version: "1.0.0"
+        skip_host_plugins: true
+      become: true
+      register: downgrade_refused
+      ignore_errors: true
+
+    - name: Check that SPM refused the downgrade
+      ansible.builtin.assert:
+        that:
+          - downgrade_refused is failed
+          - "'owngrade' in downgrade_refused.msg"
+
+    - name: Downgrade the package
+      community.sonic.package:
+        name: '{{ pkg }}'
+        source: '{{ tarball_100 }}'
+        version: "1.0.0"
+        skip_host_plugins: true
+        allow_downgrade: true
+      become: true
+      register: downgrade
+
+    - name: Check the downgrade
+      ansible.builtin.assert:
+        that:
+          - downgrade is changed
+          - downgrade.version == '1.0.0'
+          - "'--allow-downgrade' in downgrade.commands[0]"
+
+    - name: Upgrade to the version of a tarball with state=latest
+      community.sonic.package:
+        name: '{{ pkg }}'
+        source: '{{ tarball_101 }}'
+        state: latest
+        skip_host_plugins: true
+      become: true
+      register: latest
+
+    - name: Upgrade to the version of the tarball again
+      community.sonic.package:
+        name: '{{ pkg }}'
+        source: '{{ tarball_101 }}'
+        state: latest
+      become: true
+      register: latest_again
+
+    - name: Check that latest installed the tarball's version once
+      ansible.builtin.assert:
+        that:
+          - latest is changed
+          - latest.version == '1.0.1'
+          - latest_again is not changed
+          - latest_again.version == '1.0.1'
+
+    - name: Uninstall the package in check mode
+      community.sonic.package:
+        name: '{{ pkg }}'
+        state: absent
+      check_mode: true
+      register: uninstall_check
+
+    - name: List packages after check mode removal
+      ansible.builtin.command: sonic-package-manager list
+      changed_when: false
+      register: list_after_uninstall_check
+
+    - name: Check mode reports the removal without removing anything
+      ansible.builtin.assert:
+        that:
+          - uninstall_check is changed
+          - not uninstall_check.installed
+          - uninstall_check.status == 'Not Installed'
+          - list_after_uninstall_check.stdout is search('(?m)^' ~ pkg ~ '\s+.*\s1[.]0[.]1\s+Installed')
+
+    - name: Uninstall the package
+      community.sonic.package:
+        name: '{{ pkg }}'
+        state: absent
+      become: true
+      diff: true
+      register: uninstall
+
+    - name: Output from package
+      ansible.builtin.debug:
+        msg: '{{ uninstall }}'
+
+    - name: List packages after the removal
+      ansible.builtin.command: sonic-package-manager list
+      changed_when: false
+      register: list_after_uninstall
+
+    - name: Read the FEATURE entry after the removal
+      community.sonic.get_entry:
+        table: FEATURE
+        key: '{{ pkg }}'
+      register: feature_after
+
+    - name: Check that the package is gone
+      ansible.builtin.assert:
+        that:
+          - uninstall is changed
+          - not uninstall.installed
+          - uninstall.version is none
+          - uninstall.status == 'Not Installed'
+          - uninstall.diff.before.version == '1.0.1'
+          - "'uninstall -y' in uninstall.commands[0]"
+          - list_after_uninstall.stdout is search('(?m)^' ~ pkg ~ '\s+.*\sN/A\s+Not Installed')
+          - feature_after.value == {}
+
+    - name: Uninstall the package again
+      community.sonic.package:
+        name: '{{ pkg }}'
+        state: absent
+      register: uninstall_again
+
+    - name: Check that uninstalling is idempotent
+      ansible.builtin.assert:
+        that:
+          - uninstall_again is not changed
+          - uninstall_again.commands == []
+
+    - name: Remove the repository entry the tarball install created
+      community.sonic.package_repository:
+        name: '{{ pkg }}'
+        state: absent
+      become: true
+      register: remove_entry
+
+    - name: List packages after removing the entry
+      ansible.builtin.command: sonic-package-manager list
+      changed_when: false
+      register: list_after_entry_removal
+
+    - name: Check that the entry is gone
+      ansible.builtin.assert:
+        that:
+          - remove_entry is changed
+          - pkg not in list_after_entry_removal.stdout
+
+  always:
+    - name: Uninstall the test package
+      community.sonic.package:
+        name: '{{ pkg }}'
+        state: absent
+        force: true
+      become: true
+      ignore_errors: true
+
+    - name: Remove the test package entry
+      community.sonic.package_repository:
+        name: '{{ pkg }}'
+        state: absent
+      become: true
+      ignore_errors: true
+
+    - name: Remove leftover test images
+      ansible.builtin.command: docker rmi -f '{{ pkg }}:{{ item }}'
+      become: true
+      changed_when: true
+      failed_when: false
+      loop: ['1.0.0', '1.0.1']
+
+    - name: Remove the working directory
+      ansible.builtin.file:
+        path: '{{ workdir }}'
+        state: absent
+      become: true
