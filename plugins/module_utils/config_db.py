@@ -60,6 +60,9 @@ else:
     HAS_SWSSCOMMON = True
     SWSSCOMMON_IMPORT_ERROR = None
 
+#: hiredis reply type of the integer ``HSET``/``HDEL`` return inside an ``EXEC`` reply (``REDIS_REPLY_INTEGER``).
+REDIS_REPLY_INTEGER = 3
+
 
 #: Separator used by SONiC for compound CONFIG_DB keys, for example ``Vlan100|Ethernet0``.
 KEY_SEPARATOR = '|'
@@ -401,10 +404,56 @@ class ConfigDB(object):
     # -- writes (skipped in check mode) --------------------------------------
 
     def set_entry(self, table, key, value):
-        """Replace an entry with ``value`` (fields not in ``value`` are removed); ``None`` deletes the entry."""
+        """Replace an entry with ``value`` (fields not in ``value`` are removed); ``None`` deletes the entry.
+
+        The replacement is a single Redis transaction (see
+        :meth:`_replace_entry_atomically`), so daemons watching the table see
+        the old entry and then the new one, never a half-written mix.
+        """
         if self.check_mode:
             return
-        self.connector.set_entry(table, join_key(key), value)
+        key = join_key(key)
+        if value is None or not self._replace_entry_atomically(table, key, value):
+            self.connector.set_entry(table, key, value)
+
+    def _replace_entry_atomically(self, table, key, value):
+        """Write ``value`` over the stored entry inside one ``MULTI``/``EXEC``; returns ``False`` if that is not possible.
+
+        ``swsscommon``'s own ``set_entry`` issues an ``HSET`` of the new fields
+        followed by one ``HDEL`` per removed field. Every command raises a
+        keyspace event and SONiC daemons (orchagent, hostcfgd, ...) re-read the
+        whole entry on each event, so they can evaluate an intermediate entry
+        that still carries the removed fields and, for example, reject it as
+        invalid before the final state arrives. Queueing the same commands in a
+        transaction delivers the events only after ``EXEC``, when the entry is
+        complete. Falls back (returns ``False``) when the bindings lack the
+        transaction classes.
+        """
+        connector = self.connector
+        if swsscommon is None or not all(hasattr(swsscommon, n) for n in ('RedisTransactioner', 'RedisCommand')):
+            return False
+        if not hasattr(connector, 'get_redis_client') or not hasattr(connector, 'typed_to_raw'):
+            return False
+        separator = getattr(connector, 'TABLE_NAME_SEPARATOR', '|')
+        hash_name = '%s%s%s' % (table.upper(), separator, key)
+        raw = connector.typed_to_raw(value)
+        client = connector.get_redis_client(connector.db_name)
+        original = dict(client.hgetall(hash_name) or {})
+        removed = sorted(f for f in original if f not in raw)
+
+        transaction = swsscommon.RedisTransactioner(client)
+        transaction.multi()
+        for field in sorted(raw):
+            command = swsscommon.RedisCommand()
+            command.formatHSET(hash_name, field, raw[field])
+            transaction.enqueue(command, REDIS_REPLY_INTEGER)
+        for field in removed:
+            command = swsscommon.RedisCommand()
+            command.formatHDEL(hash_name, field)
+            transaction.enqueue(command, REDIS_REPLY_INTEGER)
+        if not transaction.exec():
+            raise ConfigDBError('the transaction replacing %s %s was not executed by redis' % (table, key))
+        return True
 
     def mod_entry(self, table, key, value):
         """Merge ``value`` into an entry, leaving other fields alone; ``None`` deletes the entry."""

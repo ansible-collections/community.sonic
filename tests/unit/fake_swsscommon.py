@@ -13,7 +13,9 @@ without a redis instance.
 
 Seed the database with ``{table: {key: {field: value}}}`` and inspect
 ``FakeConfigDBConnector.writes`` (a list of ``(method, table, key, value)``
-tuples) to assert on what a module wrote.
+tuples) to assert on what a module wrote. Entry replacements go through the
+fake ``RedisTransactioner``/``RedisCommand`` like on a real switch and are
+logged as ``set_entry`` writes plus an entry in ``transactions``.
 """
 
 from __future__ import (absolute_import, division, print_function)
@@ -32,6 +34,7 @@ class FakeConfigDBConnector(object):
     def __init__(self, store=None, **kwargs):
         self.store = store if store is not None else {}
         self.writes = []
+        self.transactions = []
         self.connected = False
         self.db_name = None
 
@@ -140,6 +143,81 @@ class FakeConfigDBConnector(object):
         self.writes.append(('delete_table', table, None, None))
         self.store.pop(table, None)
 
+    # -- raw redis access, as used by ConfigDB._replace_entry_atomically ---------
+
+    TABLE_NAME_SEPARATOR = '|'
+
+    def get_redis_client(self, db_name):
+        assert db_name == self.db_name, 'client requested for %s while connected to %s' % (db_name, self.db_name)
+        return FakeRedisClient(self)
+
+
+class FakeRedisClient(object):
+    """Stand-in for the ``swsscommon.DBConnector`` a connector hands out; works on raw ``TABLE|key`` hashes."""
+
+    def __init__(self, connector):
+        self.connector = connector
+
+    def _locate(self, hash_name):
+        table, _sep, key = hash_name.partition(FakeConfigDBConnector.TABLE_NAME_SEPARATOR)
+        return table, key
+
+    def hgetall(self, hash_name):
+        table, key = self._locate(hash_name)
+        return copy.deepcopy(self.connector.store.get(table, {}).get(key, {}))
+
+    def apply(self, commands):
+        """Apply queued ``('HSET', hash, field, value)``/``('HDEL', hash, field)`` commands as one write."""
+        touched = {}
+        for command in commands:
+            table, key = self._locate(command[1])
+            entry = self.connector._table(table).setdefault(key, {})
+            if command[0] == 'HSET':
+                entry[command[2]] = command[3]
+            elif command[0] == 'HDEL':
+                entry.pop(command[2], None)
+            else:
+                raise AssertionError('unexpected command %r' % (command,))
+            touched[(table, key)] = entry
+        for (table, key), entry in touched.items():
+            self.connector.writes.append(('set_entry', table, key, FakeConfigDBConnector.raw_to_typed(copy.deepcopy(entry))))
+            self.connector.transactions.append((table, key, list(commands)))
+
+
+class FakeRedisCommand(object):
+    """Stand-in for ``swsscommon.RedisCommand``; only the formatters the wrapper uses."""
+
+    def __init__(self):
+        self.command = None
+
+    def formatHSET(self, hash_name, field, value):  # pylint: disable=invalid-name
+        self.command = ('HSET', hash_name, field, value)
+
+    def formatHDEL(self, hash_name, field):  # pylint: disable=invalid-name
+        self.command = ('HDEL', hash_name, field)
+
+
+class FakeRedisTransactioner(object):
+    """Stand-in for ``swsscommon.RedisTransactioner``: queues commands and applies them all in ``exec``."""
+
+    def __init__(self, client):
+        self.client = client
+        self.queue = None
+
+    def multi(self):
+        self.queue = []
+
+    def enqueue(self, command, expected_type):
+        assert self.queue is not None, 'enqueue() before multi()'
+        assert command.command is not None, 'enqueue() of an unformatted command'
+        assert expected_type == 3, 'HSET/HDEL reply with an integer (type 3), got %r' % (expected_type,)
+        self.queue.append(command.command)
+
+    def exec(self):
+        commands, self.queue = self.queue, None
+        self.client.apply(commands)
+        return True
+
 
 class FakeSwssCommon(object):
     """Replacement for the ``swsscommon.swsscommon`` module object.
@@ -149,6 +227,10 @@ class FakeSwssCommon(object):
     a connector bound to the shared store; the connectors are kept in
     ``connectors`` and the combined write log is available as ``writes``.
     """
+
+    #: Transaction classes the wrapper looks up on the module object.
+    RedisTransactioner = FakeRedisTransactioner
+    RedisCommand = FakeRedisCommand
 
     def __init__(self, seed=None):
         self.store = {}
@@ -163,6 +245,11 @@ class FakeSwssCommon(object):
     @property
     def writes(self):
         return [w for c in self.connectors for w in c.writes]
+
+    @property
+    def transactions(self):
+        """``(table, key, commands)`` for every ``set_entry`` that went through a redis transaction."""
+        return [t for c in self.connectors for t in c.transactions]
 
     def seed(self, data):
         """Load ``{table: {key: entry}}`` with typed values into the store, replacing existing entries."""
