@@ -204,3 +204,135 @@
   ansible.builtin.assert:
     that:
       - cleared_after_deprecated_name is changed
+
+# Transceiver settings (laser frequency, TX power, DOM polling). The virtual
+# switch has no optics, so the fields are only checked in CONFIG_DB on an
+# otherwise unused port.
+- name: Read the transceiver test port before the test
+  community.sonic.get_entry:
+    table: PORT
+    key: Ethernet28
+  register: transceiver_before
+
+- name: Check the transceiver test port starts without transceiver settings
+  ansible.builtin.assert:
+    that:
+      - "'laser_freq' not in transceiver_before.value"
+      - "'tx_power' not in transceiver_before.value"
+      - "'dom_polling' not in transceiver_before.value"
+
+- name: Predict setting transceiver settings
+  community.sonic.interface_port:
+    interface: Ethernet28
+    laser_frequency: 194900
+    tx_power: -10
+    dom_polling: disabled
+  check_mode: true
+  diff: true
+  register: transceiver_prediction
+
+- name: Read the transceiver test port after check mode
+  community.sonic.get_entry:
+    table: PORT
+    key: Ethernet28
+  register: transceiver_after_check_mode
+
+- name: Verify check mode predicted the change without writing
+  ansible.builtin.assert:
+    that:
+      - transceiver_prediction is changed
+      - transceiver_prediction.diff.after.laser_freq == '194900'
+      - transceiver_prediction.diff.after.tx_power == '-10.0'
+      - transceiver_prediction.diff.after.dom_polling == 'disabled'
+      - transceiver_after_check_mode.value == transceiver_before.value
+
+- name: Set transceiver settings
+  community.sonic.interface_port:
+    interface: Ethernet28
+    laser_frequency: 194900
+    tx_power: -10
+    dom_polling: disabled
+  diff: true
+  register: transceiver_set
+
+- name: Set transceiver settings again
+  community.sonic.interface_port:
+    interface: Ethernet28
+    laser_frequency: 194900
+    tx_power: -10
+    dom_polling: disabled
+  register: transceiver_set_again
+
+- name: Read the transceiver test port after setting
+  community.sonic.get_entry:
+    table: PORT
+    key: Ethernet28
+  register: transceiver_after_set
+
+- name: Output from system command
+  ansible.builtin.debug:
+    msg: '{{ transceiver_after_set.value }}'
+
+- name: Check the transceiver settings are in CONFIG_DB and idempotent
+  ansible.builtin.assert:
+    that:
+      - transceiver_set is changed
+      - transceiver_set.interface == 'Ethernet28'
+      - transceiver_set_again is not changed
+      - transceiver_after_set.value.laser_freq == '194900'
+      - transceiver_after_set.value.tx_power == '-10.0'
+      - transceiver_after_set.value.dom_polling == 'disabled'
+      - transceiver_after_set.value.speed == transceiver_before.value.speed
+
+- name: Change one transceiver setting and leave the others alone
+  community.sonic.interface_port:
+    interface: Ethernet28
+    laser_frequency: 193100
+  register: transceiver_change
+
+- name: Read the transceiver test port after the change
+  community.sonic.get_entry:
+    table: PORT
+    key: Ethernet28
+  register: transceiver_after_change
+
+- name: Check only the laser frequency changed
+  ansible.builtin.assert:
+    that:
+      - transceiver_change is changed
+      - transceiver_after_change.value.laser_freq == '193100'
+      - transceiver_after_change.value.tx_power == '-10.0'
+      - transceiver_after_change.value.dom_polling == 'disabled'
+
+- name: Clear transceiver settings
+  community.sonic.interface_port:
+    interface: Ethernet28
+    laser_frequency: 0
+    tx_power: 0
+    dom_polling: default
+  diff: true
+  register: transceiver_clear
+
+- name: Clear transceiver settings again
+  community.sonic.interface_port:
+    interface: Ethernet28
+    laser_frequency: 0
+    tx_power: 0
+    dom_polling: default
+  register: transceiver_clear_again
+
+- name: Read the transceiver test port after clearing
+  community.sonic.get_entry:
+    table: PORT
+    key: Ethernet28
+  register: transceiver_after_clear
+
+- name: Check the transceiver settings are gone and the port is as before
+  ansible.builtin.assert:
+    that:
+      - transceiver_clear is changed
+      - transceiver_clear_again is not changed
+      - "'laser_freq' not in transceiver_after_clear.value"
+      - "'tx_power' not in transceiver_after_clear.value"
+      - "'dom_polling' not in transceiver_after_clear.value"
+      - transceiver_after_clear.value == transceiver_before.value
