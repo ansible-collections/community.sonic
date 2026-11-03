@@ -85,25 +85,21 @@ interface:
 
 import copy
 import re
-import traceback
 
-from ansible.module_utils.basic import AnsibleModule, missing_required_lib
-
-try:
-    from swsscommon import swsscommon
-except ImportError:
-    HAS_SWSSCOMMON_LIBRARY = False
-    SWSSCOMMON_IMPORT_ERROR = traceback.format_exc()
-else:
-    HAS_SWSSCOMMON_LIBRARY = True
-    SWSSCOMMON_IMPORT_ERROR = None
+from ansible.module_utils.basic import AnsibleModule
+from ansible_collections.community.sonic.plugins.module_utils.config_db import (
+    ConfigDB,
+    UnknownInterfaceError,
+    build_result,
+    resolve_port_name,
+)
 
 
 class ModuleError(Exception):
     pass
 
 
-class NoSuchInterfaceError(ModuleError):
+class NoSuchInterfaceError(ModuleError, UnknownInterfaceError):
     pass
 
 
@@ -172,10 +168,10 @@ def mutate_state(port_table,
                  speed=None,
                  fec=None):
     changed = False
-    port_alias_table = {v['alias']: k for k, v in port_table.items() if 'alias' in v}
-    ifname = port_alias_table.get(interface, interface)
-    if ifname not in port_table:
-        raise NoSuchInterfaceError(f'could not find interface "{ifname}"')
+    try:
+        ifname = resolve_port_name(port_table, interface)
+    except UnknownInterfaceError:
+        raise NoSuchInterfaceError(f'could not find interface "{interface}"')
 
     current_state = port_table[ifname]
     new_state = copy.copy(current_state)
@@ -240,13 +236,7 @@ def run_module():
         supports_check_mode=True
     )
 
-    if not HAS_SWSSCOMMON_LIBRARY:
-        module.fail_json(
-            msg=missing_required_lib('swsscommon'),
-            exception=SWSSCOMMON_IMPORT_ERROR)
-
-    config_db = swsscommon.ConfigDBConnector()
-    config_db.connect()
+    config_db = ConfigDB(module).connect()
     port_table = config_db.get_table('PORT')
 
     try:
@@ -254,25 +244,19 @@ def run_module():
     except ModuleError as e:
         module.fail_json(msg=str(e))
 
-    diff = {'before': old_state, 'after': new_state}
+    # ConfigDB skips writes in check mode, so only the "changed" guard is needed here.
+    if changed:
+        if 'description' in old_state and 'description' not in new_state:
+            # Specifically for description, if it has been removed we need to clean
+            # it up from APPL_DB / PORT_TABLE since that is not done automatically
+            # as of this writing (2023-04-15).
+            # The cleanest way to do this is to set the description to '' before
+            # deleting it, which triggers the APPL_DB to refresh.
+            config_db.mod_entry('PORT', ifname, {'description': ''})
 
-    if module.check_mode:
-        module.exit_json(changed=changed, interface=ifname, diff=diff)
+        config_db.set_entry('PORT', ifname, new_state)
 
-    if not changed:
-        module.exit_json(changed=changed, interface=ifname, diff=diff)
-
-    if 'description' in old_state and 'description' not in new_state:
-        # Specifically for description, if it has been removed we need to clean
-        # it up from APPL_DB / PORT_TABLE since that is not done automatically
-        # as of this writing (2023-04-15).
-        # The cleanest way to do this is to set the description to '' before
-        # deleting it, which triggers the APPL_DB to refresh.
-        config_db.mod_entry('PORT', ifname, {'description': ''})
-
-    config_db.set_entry('PORT', ifname, new_state)
-
-    module.exit_json(changed=changed, interface=ifname, diff=diff)
+    module.exit_json(**build_result(changed, old_state, new_state, interface=ifname))
 
 
 def main():

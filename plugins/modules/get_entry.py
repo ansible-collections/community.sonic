@@ -61,32 +61,8 @@ value:
     returned: always
 '''
 
-import traceback
-from ansible.module_utils.basic import AnsibleModule, missing_required_lib
-
-try:
-    from swsscommon import swsscommon
-except ImportError:
-    HAS_SWSSCOMMON_LIBRARY = False
-    SWSSCOMMON_IMPORT_ERROR = traceback.format_exc()
-else:
-    HAS_SWSSCOMMON_LIBRARY = True
-    SWSSCOMMON_IMPORT_ERROR = None
-
-
-# get_entry / get_table can return a dict with tuples as keys, so called multi-keys
-# so join the tuple into a string so it can be JSON encoded
-def fix_keys(value):
-    if not isinstance(value, dict):
-        return value
-    new_value = dict()
-    for k, v in value.items():
-        if isinstance(k, tuple):
-            nk = '|'.join(k)
-        else:
-            nk = k
-        new_value[nk] = v
-    return new_value
+from ansible.module_utils.basic import AnsibleModule
+from ansible_collections.community.sonic.plugins.module_utils.config_db import ConfigDB
 
 
 def run_module():
@@ -100,22 +76,16 @@ def run_module():
         supports_check_mode=True
     )
 
-    if not HAS_SWSSCOMMON_LIBRARY:
-        module.fail_json(
-            msg=missing_required_lib('swsscommon'),
-            exception=SWSSCOMMON_IMPORT_ERROR)
-
-    config_db = swsscommon.ConfigDBConnector()
-    config_db.connect()
+    config_db = ConfigDB(module).connect()
 
     table = module.params.get('table')
     key = module.params.get('key', None)
+    # ConfigDB joins compound (tuple) keys into 'a|b' strings so the value can be JSON encoded.
     if key is None:
         value = config_db.get_table(table)
     else:
         value = config_db.get_entry(table, key)
 
-    value = fix_keys(value)
     rargs = {
         'changed': False,
         'table': table,
