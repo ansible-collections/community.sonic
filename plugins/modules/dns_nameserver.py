@@ -24,9 +24,8 @@ description:
   - CONFIG_DB keys are unordered and SONiC writes the nameservers to
     C(/etc/resolv.conf) in sorted order, so the order of O(servers) is not
     preserved on the device.
-  - Static nameservers are only supported from SONiC 202305 on. The module fails
-    on older releases, which have no C(sonic-dns) YANG model, instead of
-    silently writing a table that nothing reads.
+  - The C(DNS_NAMESERVER) table is honoured from SONiC 202305 on. Older
+    releases ignore it, so the module writes it without effect there.
 extends_documentation_fragment:
   - community.sonic.attributes
 attributes:
@@ -106,7 +105,6 @@ diff:
 '''
 
 import ipaddress
-import os
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.community.sonic.plugins.module_utils.config_db import ConfigDB, ConfigDBError, build_result
@@ -115,10 +113,6 @@ TABLE = 'DNS_NAMESERVER'
 
 #: SONiC enforces this limit in the CLI and in the sonic-dns YANG model.
 MAX_NAMESERVERS = 3
-
-#: Where SONiC installs its YANG models; the DNS model only exists on releases that manage DNS_NAMESERVER.
-YANG_MODEL_DIR = '/usr/local/yang-models'
-DNS_YANG_MODEL = 'sonic-dns.yang'
 
 
 def canonical_address(address):
@@ -173,21 +167,6 @@ def plan_nameservers(current_keys, addresses, state, exclusive):
     return to_add, to_remove, after
 
 
-def release_supports_dns(yang_dir=None):
-    """Return False when this SONiC release installs YANG models but not the DNS one.
-
-    The ``DNS_NAMESERVER`` table and the ``hostcfgd`` code that consumes it
-    arrived together with ``sonic-dns.yang`` in SONiC 202305. When the
-    YANG directory is missing altogether nothing can be concluded and the
-    release is assumed to support it.
-    """
-    if yang_dir is None:
-        yang_dir = YANG_MODEL_DIR
-    if not os.path.isdir(yang_dir):
-        return True
-    return os.path.exists(os.path.join(yang_dir, DNS_YANG_MODEL))
-
-
 def run_module():
     module_args = dict(
         address=dict(type='str'),
@@ -219,11 +198,6 @@ def run_module():
         addresses = validate_addresses(addresses)
     except ValueError as e:
         module.fail_json(msg=str(e))
-
-    if not release_supports_dns():
-        module.fail_json(msg='this SONiC release does not support static DNS nameservers '
-                             '(no %s in %s); the DNS_NAMESERVER table is only honoured from SONiC 202305 on'
-                         % (DNS_YANG_MODEL, YANG_MODEL_DIR))
 
     db = ConfigDB(module).connect()
     try:
