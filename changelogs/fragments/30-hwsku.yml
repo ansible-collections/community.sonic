@@ -1,0 +1,3 @@
+---
+minor_changes:
+  - Add the ``hwsku`` module to install a (custom) HWSKU directory, select the HWSKU in ``/etc/sonic/sonic-environment`` and the saved ``config_db.json`` and regenerate the ``PORT`` table for it, returning ``reboot_required`` so the play decides when to reboot (https://github.com/ansible-collections/community.sonic/issues/30).
