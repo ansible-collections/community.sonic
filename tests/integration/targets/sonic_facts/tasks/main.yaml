@@ -62,7 +62,8 @@
 - name: Check the facts match show version
   ansible.builtin.assert:
     that:
-      - show_version.stdout is search('(?m)^SONiC Software Version:\\s+' ~ (ansible_facts.sonic.version | regex_escape) ~ '\\s*$')
+      # show version prefixes the build_version from sonic_version.yml with "SONiC.".
+      - show_version.stdout is search('(?m)^SONiC Software Version:\\s+(SONiC\\.)?' ~ (ansible_facts.sonic.version | regex_escape) ~ '\\s*$')
       - show_version.stdout is search('(?m)^Kernel:\\s+' ~ (ansible_facts.sonic.kernel | regex_escape) ~ '\\s*$')
       - show_version.stdout is search('(?m)^Build commit:\\s+' ~ (ansible_facts.sonic.build.commit_id | regex_escape) ~ '\\s*$')
 

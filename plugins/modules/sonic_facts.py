@@ -143,10 +143,12 @@ ansible_facts:
           type: str
           sample: 52:54:00:12:34:56
         version:
-          description: The SONiC build version (C(build_version) in C(/etc/sonic/sonic_version.yml)).
+          description:
+            - The SONiC build version (C(build_version) in C(/etc/sonic/sonic_version.yml)).
+            - This is the raw value from the file; C(show version) prints it with a C(SONiC.) prefix.
           returned: when the V(min) subset is gathered
           type: str
-          sample: SONiC.202311.0
+          sample: 202311.0-20240101.42
         kernel:
           description: The kernel version (C(kernel_version) in C(/etc/sonic/sonic_version.yml)).
           returned: when the V(min) subset is gathered
@@ -190,7 +192,7 @@ ansible_facts:
           description: All fields of C(/etc/sonic/sonic_version.yml), as strings.
           returned: when the V(min) subset is gathered
           type: dict
-          sample: {'build_version': 'SONiC.202311.0', 'debian_version': '12.1', 'asic_type': 'vs'}
+          sample: {'build_version': '202311.0-20240101.42', 'debian_version': '12.1', 'asic_type': 'vs'}
         mgmt_vrf_enabled:
           description: Whether the management VRF is enabled (C(MGMT_VRF_CONFIG|vrf_global)).
           returned: when the V(min) subset is gathered
