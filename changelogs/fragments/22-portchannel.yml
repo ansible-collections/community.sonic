@@ -1,0 +1,4 @@
+---
+minor_changes:
+  - Add the ``portchannel`` and ``portchannel_member`` modules to manage link aggregation groups through the ``PORTCHANNEL`` and ``PORTCHANNEL_MEMBER`` tables (https://github.com/ansible-collections/community.sonic/issues/22).
+  - vlan_member - accept PortChannels and port aliases as ``interface``, return the resolved ``interface`` name and fail with a clear message for unknown ports (https://github.com/ansible-collections/community.sonic/issues/22).

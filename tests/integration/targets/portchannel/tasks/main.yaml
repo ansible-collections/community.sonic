@@ -1,0 +1,392 @@
+---
+# The virtual switch exposes Ethernet0, Ethernet4, Ethernet8, ... Ethernet0 is
+# used by the vlan and interface_port targets, so this target uses
+# Ethernet16 and Ethernet20 as bundle members and Ethernet24 for the
+# "port is a VLAN member" failure case. The default configuration of the
+# virtual switch puts IP addresses on every port, which SONiC (and the module)
+# refuse on a PortChannel member, so the member ports' addresses are removed
+# with the CLI first and restored at the end.
+- name: PortChannel tests
+  vars:
+    pc_name: PortChannel100
+    pc_members:
+      - Ethernet16
+      - Ethernet20
+    vlan_port: Ethernet24
+    vlan_id: 3362
+  block:
+    - name: Read VLAN memberships
+      community.sonic.get_entry:
+        table: VLAN_MEMBER
+      register: vlan_members_before
+
+    - name: Check that the test ports are free
+      ansible.builtin.assert:
+        that:
+          - vlan_members_before.value | select('search', '[|]' ~ item ~ '$') | list | length == 0
+        fail_msg: "{{ item }} is already a VLAN member; pick other ports for this target"
+      loop: "{{ pc_members + [vlan_port] }}"
+
+    - name: Read the INTERFACE table
+      community.sonic.get_entry:
+        table: INTERFACE
+      register: interface_table
+
+    - name: Collect the IP addresses of the member ports
+      ansible.builtin.set_fact:
+        member_ips: >-
+          {{ interface_table.value | select('match', '^(' ~ (pc_members | join('|')) ~ ')[|]')
+             | map('split', '|') | list }}
+
+    - name: Remove the IP addresses from the member ports
+      ansible.builtin.command: "config interface ip remove {{ item[0] }} {{ item[1] }}"
+      become: true
+      changed_when: true
+      loop: "{{ member_ips }}"
+
+    - name: Read the INTERFACE table after removing the addresses
+      community.sonic.get_entry:
+        table: INTERFACE
+      register: interface_table_after
+
+    - name: Check the member ports have no L3 configuration left
+      ansible.builtin.assert:
+        that:
+          - interface_table_after.value | select('match', '^' ~ item ~ '([|]|$)') | list | length == 0
+        fail_msg: "{{ item }} still has INTERFACE entries: {{ interface_table_after.value | select('match', '^' ~ item) | list }}"
+      loop: "{{ pc_members }}"
+
+    - name: Predict creating the PortChannel
+      community.sonic.portchannel:
+        name: "{{ pc_name }}"
+        description: Integration test bundle
+        fast_rate: true
+      check_mode: true
+      diff: true
+      register: create_prediction
+
+    - name: Read PORTCHANNEL after check mode
+      community.sonic.get_entry:
+        table: PORTCHANNEL
+        key: "{{ pc_name }}"
+      register: after_check_mode
+
+    - name: Verify check mode predicted the change without writing
+      ansible.builtin.assert:
+        that:
+          - create_prediction is changed
+          - create_prediction.interface == pc_name
+          - create_prediction.diff.before == {}
+          - create_prediction.diff.after.description == 'Integration test bundle'
+          - create_prediction.diff.after.fast_rate == 'true'
+          - after_check_mode.value == {}
+
+    - name: Create the PortChannel
+      community.sonic.portchannel:
+        name: "{{ pc_name }}"
+        description: Integration test bundle
+        fast_rate: true
+      diff: true
+      register: create_result
+
+    - name: Create the PortChannel again
+      community.sonic.portchannel:
+        name: "{{ pc_name }}"
+        description: Integration test bundle
+        fast_rate: true
+      register: create_again_result
+
+    - name: Read the PORTCHANNEL entry
+      community.sonic.get_entry:
+        table: PORTCHANNEL
+        key: "{{ pc_name }}"
+      register: pc_entry
+
+    - name: Output the PORTCHANNEL entry
+      ansible.builtin.debug:
+        msg: '{{ pc_entry.value }}'
+
+    - name: Check creation and idempotency
+      ansible.builtin.assert:
+        that:
+          - create_result is changed
+          - create_result.diff.before == {}
+          - create_again_result is not changed
+          - create_again_result.diff.before == create_again_result.diff.after
+          - pc_entry.value.admin_status == 'up'
+          - pc_entry.value.mtu == '9100'
+          - pc_entry.value.min_links == '1'
+          - pc_entry.value.lacp_key == 'auto'
+          - pc_entry.value.fast_rate == 'true'
+          - pc_entry.value.description == 'Integration test bundle'
+
+    - name: Read the alias of the second member port
+      community.sonic.get_entry:
+        table: PORT
+        key: "{{ pc_members[1] }}"
+      register: second_port
+
+    - name: Add the first member by name
+      community.sonic.portchannel_member:
+        portchannel: "{{ pc_name }}"
+        interface: "{{ pc_members[0] }}"
+      diff: true
+      register: member_result_0
+
+    - name: Add the second member by alias
+      community.sonic.portchannel_member:
+        portchannel: "{{ pc_name }}"
+        interface: "{{ second_port.value.alias | default(pc_members[1]) }}"
+      diff: true
+      register: member_result_1
+
+    - name: Add the members again
+      community.sonic.portchannel_member:
+        portchannel: "{{ pc_name }}"
+        interface: "{{ item }}"
+      loop: "{{ pc_members }}"
+      register: member_again_result
+
+    - name: Read the PORTCHANNEL_MEMBER table
+      community.sonic.get_entry:
+        table: PORTCHANNEL_MEMBER
+      register: member_table
+
+    - name: Output the PORTCHANNEL_MEMBER table
+      ansible.builtin.debug:
+        msg: '{{ member_table.value }}'
+
+    - name: Check member creation and idempotency
+      ansible.builtin.assert:
+        that:
+          - member_result_0 is changed
+          - member_result_0.interface == pc_members[0]
+          - member_result_0.portchannel == pc_name
+          - member_result_1 is changed
+          - member_result_1.interface == pc_members[1]
+          - member_again_result.results | map(attribute='changed') | select | list | length == 0
+          - (pc_name ~ '|' ~ pc_members[0]) in member_table.value
+          - (pc_name ~ '|' ~ pc_members[1]) in member_table.value
+
+    - name: Query the system for PortChannels
+      ansible.builtin.command: show interfaces portchannel
+      changed_when: false
+      register: show_pc
+      retries: 30
+      delay: 2
+      until: >-
+        show_pc.stdout is search('(?m)^.*\\b' ~ pc_name ~ '\\b.*' ~ pc_members[0] ~ '.*$')
+        and show_pc.stdout is search('(?m)^.*\\b' ~ pc_name ~ '\\b.*' ~ pc_members[1] ~ '.*$')
+
+    - name: Output from system command
+      ansible.builtin.debug:
+        msg: '{{ show_pc.stdout }}'
+
+    - name: Check that the PortChannel and its members are up in teamd
+      ansible.builtin.assert:
+        that:
+          - show_pc.stdout is search('(?m)^.*\\b' ~ pc_name ~ '\\b.*' ~ pc_members[0] ~ '.*$')
+          - show_pc.stdout is search('(?m)^.*\\b' ~ pc_name ~ '\\b.*' ~ pc_members[1] ~ '.*$')
+
+    - name: Create a VLAN for the membership tests
+      community.sonic.vlan:
+        vlanid: "{{ vlan_id }}"
+
+    - name: Add the PortChannel to the VLAN
+      community.sonic.vlan_member:
+        vlanid: "{{ vlan_id }}"
+        interface: "{{ pc_name }}"
+        tagged: true
+      register: pc_vlan_member
+
+    - name: Add the PortChannel to the VLAN again
+      community.sonic.vlan_member:
+        vlanid: "{{ vlan_id }}"
+        interface: "{{ pc_name }}"
+        tagged: true
+      register: pc_vlan_member_again
+
+    - name: Add a port to the VLAN
+      community.sonic.vlan_member:
+        vlanid: "{{ vlan_id }}"
+        interface: "{{ vlan_port }}"
+        tagged: false
+
+    - name: Read the VLAN_MEMBER entry of the PortChannel
+      community.sonic.get_entry:
+        table: VLAN_MEMBER
+        key: "Vlan{{ vlan_id }}|{{ pc_name }}"
+      register: pc_vlan_entry
+
+    - name: Check the PortChannel VLAN membership
+      ansible.builtin.assert:
+        that:
+          - pc_vlan_member is changed
+          - pc_vlan_member.interface == pc_name
+          - pc_vlan_member_again is not changed
+          - pc_vlan_entry.value.tagging_mode == 'tagged'
+
+    - name: Try to add a VLAN member port to the PortChannel
+      community.sonic.portchannel_member:
+        portchannel: "{{ pc_name }}"
+        interface: "{{ vlan_port }}"
+      register: vlan_port_member
+      ignore_errors: true
+
+    - name: Try to add a port to a PortChannel that does not exist
+      community.sonic.portchannel_member:
+        portchannel: PortChannel101
+        interface: "{{ vlan_port }}"
+      register: missing_pc_member
+      ignore_errors: true
+
+    - name: Try to remove the PortChannel while it has members
+      community.sonic.portchannel:
+        name: "{{ pc_name }}"
+        state: absent
+      register: remove_with_members
+      ignore_errors: true
+
+    - name: Check the failures are reported cleanly
+      ansible.builtin.assert:
+        that:
+          - vlan_port_member is failed
+          - "'is a member of Vlan' ~ vlan_id in vlan_port_member.msg"
+          - missing_pc_member is failed
+          - "'does not exist' in missing_pc_member.msg"
+          - remove_with_members is failed
+          - "'still has members' in remove_with_members.msg"
+
+    - name: Remove the first member
+      community.sonic.portchannel_member:
+        portchannel: "{{ pc_name }}"
+        interface: "{{ pc_members[0] }}"
+        state: absent
+      register: member_remove_0
+
+    - name: Remove the first member again
+      community.sonic.portchannel_member:
+        portchannel: "{{ pc_name }}"
+        interface: "{{ pc_members[0] }}"
+        state: absent
+      register: member_remove_0_again
+
+    - name: Query the system for PortChannels
+      ansible.builtin.command: show interfaces portchannel
+      changed_when: false
+      register: show_pc_after_remove
+      retries: 30
+      delay: 2
+      until: >-
+        show_pc_after_remove.stdout is not search('(?m)^.*\\b' ~ pc_name ~ '\\b.*' ~ pc_members[0] ~ '.*$')
+        and show_pc_after_remove.stdout is search('(?m)^.*\\b' ~ pc_name ~ '\\b.*' ~ pc_members[1] ~ '.*$')
+
+    - name: Output from system command
+      ansible.builtin.debug:
+        msg: '{{ show_pc_after_remove.stdout }}'
+
+    - name: Check the member removal
+      ansible.builtin.assert:
+        that:
+          - member_remove_0 is changed
+          - member_remove_0_again is not changed
+          - show_pc_after_remove.stdout is not search('(?m)^.*\\b' ~ pc_name ~ '\\b.*' ~ pc_members[0] ~ '.*$')
+          - show_pc_after_remove.stdout is search('(?m)^.*\\b' ~ pc_name ~ '\\b.*' ~ pc_members[1] ~ '.*$')
+
+    - name: Remove the second member
+      community.sonic.portchannel_member:
+        portchannel: "{{ pc_name }}"
+        interface: "{{ pc_members[1] }}"
+        state: absent
+
+    - name: Try to remove the PortChannel while it is a VLAN member
+      community.sonic.portchannel:
+        name: "{{ pc_name }}"
+        state: absent
+      register: remove_vlan_member_pc
+      ignore_errors: true
+
+    - name: Remove the PortChannel from the VLAN
+      community.sonic.vlan_member:
+        vlanid: "{{ vlan_id }}"
+        interface: "{{ pc_name }}"
+        state: absent
+      register: pc_vlan_remove
+
+    - name: Check the removal is refused while the PortChannel is a VLAN member
+      ansible.builtin.assert:
+        that:
+          - remove_vlan_member_pc is failed
+          - "'still a member of Vlan' ~ vlan_id in remove_vlan_member_pc.msg"
+          - pc_vlan_remove is changed
+
+    - name: Remove the PortChannel
+      community.sonic.portchannel:
+        name: "{{ pc_name }}"
+        state: absent
+      diff: true
+      register: remove_result
+
+    - name: Remove the PortChannel again
+      community.sonic.portchannel:
+        name: "{{ pc_name }}"
+        state: absent
+      register: remove_again_result
+
+    - name: Query the system for PortChannels
+      ansible.builtin.command: show interfaces portchannel
+      changed_when: false
+      register: show_pc_gone
+      retries: 30
+      delay: 2
+      until: show_pc_gone.stdout is not search('(?m)^.*\\b' ~ pc_name ~ '\\b.*$')
+
+    - name: Output from system command
+      ansible.builtin.debug:
+        msg: '{{ show_pc_gone.stdout }}'
+
+    - name: Check the PortChannel removal
+      ansible.builtin.assert:
+        that:
+          - remove_result is changed
+          - remove_result.diff.after == {}
+          - remove_again_result is not changed
+          - show_pc_gone.stdout is not search('(?m)^.*\\b' ~ pc_name ~ '\\b.*$')
+
+  always:
+    - name: Clean up VLAN memberships
+      community.sonic.vlan_member:
+        vlanid: "{{ vlan_id }}"
+        interface: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ pc_name }}"
+        - "{{ vlan_port }}"
+      failed_when: false
+
+    - name: Clean up the VLAN
+      community.sonic.vlan:
+        vlanid: "{{ vlan_id }}"
+        state: absent
+      failed_when: false
+
+    - name: Clean up PortChannel members
+      community.sonic.portchannel_member:
+        portchannel: "{{ pc_name }}"
+        interface: "{{ item }}"
+        state: absent
+      loop: "{{ pc_members }}"
+      failed_when: false
+
+    - name: Clean up the PortChannel
+      community.sonic.portchannel:
+        name: "{{ pc_name }}"
+        state: absent
+      failed_when: false
+
+    - name: Restore the IP addresses of the member ports
+      ansible.builtin.command: "config interface ip add {{ item[0] }} {{ item[1] }}"
+      become: true
+      changed_when: true
+      loop: "{{ member_ips | default([]) }}"
+      failed_when: false

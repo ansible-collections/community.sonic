@@ -9,7 +9,14 @@ __metaclass__ = type
 import pytest
 
 from ansible_collections.community.sonic.plugins.module_utils import config_db
-from ansible_collections.community.sonic.plugins.modules import get_entry, interface_port, vlan, vlan_member
+from ansible_collections.community.sonic.plugins.modules import (
+    get_entry, interface_port, portchannel, portchannel_member, vlan, vlan_member)
+
+#: Tables every module run may rely on: a port with an alias and a PortChannel.
+BASE_SEED = {
+    'PORT': {'Ethernet0': {'alias': 'QSFP1', 'speed': '10000'}},
+    'PORTCHANNEL': {'PortChannel9': {'admin_status': 'up', 'mtu': '9100', 'lacp_key': 'auto'}},
+}
 
 
 @pytest.mark.parametrize('module,params,table,key,current,wanted,extra', (
@@ -21,11 +28,24 @@ from ansible_collections.community.sonic.plugins.modules import get_entry, inter
     (vlan, dict(vlanid=42, state='absent'),
      'VLAN', 'Vlan42', {'vlanid': '42'}, None, {'interface': 'Vlan42'}),
     (vlan_member, dict(vlanid=42, interface='Ethernet0', tagged=True),
-     'VLAN_MEMBER', 'Vlan42|Ethernet0', {}, {'tagging_mode': 'tagged'}, {}),
-    (vlan_member, dict(vlanid=42, interface='Ethernet0', tagged=False),
-     'VLAN_MEMBER', 'Vlan42|Ethernet0', {'tagging_mode': 'tagged'}, {'tagging_mode': 'untagged'}, {}),
+     'VLAN_MEMBER', 'Vlan42|Ethernet0', {}, {'tagging_mode': 'tagged'}, {'interface': 'Ethernet0'}),
+    (vlan_member, dict(vlanid=42, interface='QSFP1', tagged=False),
+     'VLAN_MEMBER', 'Vlan42|Ethernet0', {'tagging_mode': 'tagged'}, {'tagging_mode': 'untagged'}, {'interface': 'Ethernet0'}),
     (vlan_member, dict(vlanid=42, interface='Ethernet0', state='absent'),
-     'VLAN_MEMBER', 'Vlan42|Ethernet0', {'tagging_mode': 'tagged'}, None, {}),
+     'VLAN_MEMBER', 'Vlan42|Ethernet0', {'tagging_mode': 'tagged'}, None, {'interface': 'Ethernet0'}),
+    (vlan_member, dict(vlanid=42, interface='PortChannel3', tagged=True),
+     'VLAN_MEMBER', 'Vlan42|PortChannel3', {}, {'tagging_mode': 'tagged'}, {'interface': 'PortChannel3'}),
+    (portchannel, dict(name='PortChannel3', description='Peering', fast_rate=True),
+     'PORTCHANNEL', 'PortChannel3', {},
+     {'admin_status': 'up', 'mtu': '9100', 'min_links': '1', 'lacp_key': 'auto', 'fast_rate': 'true', 'description': 'Peering'},
+     {'interface': 'PortChannel3'}),
+    (portchannel, dict(name='PortChannel3', enabled=False, mtu=1500),
+     'PORTCHANNEL', 'PortChannel3', {'admin_status': 'up', 'mtu': '9100', 'lacp_key': 'auto'},
+     {'admin_status': 'down', 'mtu': '1500', 'min_links': '1', 'lacp_key': 'auto'}, {'interface': 'PortChannel3'}),
+    (portchannel, dict(name='PortChannel3', state='absent'),
+     'PORTCHANNEL', 'PortChannel3', {'admin_status': 'up', 'mtu': '9100', 'lacp_key': 'auto'}, None, {'interface': 'PortChannel3'}),
+    (portchannel_member, dict(portchannel='PortChannel9', interface='QSFP1'),
+     'PORTCHANNEL_MEMBER', 'PortChannel9|Ethernet0', {}, {}, {'portchannel': 'PortChannel9', 'interface': 'Ethernet0'}),
     (interface_port, dict(interface='Ethernet0', enabled=False),
      'PORT', 'Ethernet0', {'speed': '10000', 'admin_status': 'up'}, {'speed': '10000', 'admin_status': 'down'}, {'interface': 'Ethernet0'}),
     (interface_port, dict(interface='QSFP1', description='uplink', speed='100G', fec='rs'),
@@ -37,9 +57,12 @@ from ansible_collections.community.sonic.plugins.modules import get_entry, inter
 def test_module_changes_and_diff(fake_swsscommon, run_module, module, params, table, key, current, wanted, extra,
                                  check_mode, already_applied):
     if already_applied:
-        current = wanted or {}
-    if current:
+        current = wanted if wanted is not None else {}
+    fake_swsscommon.seed(BASE_SEED)
+    if current or (already_applied and wanted is not None):
         fake_swsscommon.seed({table: {key: current}})
+    elif already_applied:
+        fake_swsscommon.store.get(table, {}).pop(key, None)
 
     result = run_module(module, params, check_mode=check_mode)
 
@@ -119,6 +142,8 @@ def test_get_entry_key(fake_swsscommon, run_module):
     (vlan_member, dict(vlanid=42, interface='Ethernet0', tagged=True)),
     (interface_port, dict(interface='Ethernet0')),
     (get_entry, dict(table='PORT')),
+    (portchannel, dict(name='PortChannel3')),
+    (portchannel_member, dict(portchannel='PortChannel9', interface='Ethernet0')),
 ))
 def test_missing_swsscommon(monkeypatch, run_module, module, params):
     monkeypatch.setattr(config_db, 'HAS_SWSSCOMMON', False)
