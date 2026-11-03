@@ -62,7 +62,7 @@ def test_set_enable_then_disable():
     _, new_state, _, changed = sonic_interface_port.mutate_state(
         new_port_table, interface='qsfp1', enabled=False)
     assert changed, 'state was expected to change'
-    assert 'admin_status' not in new_state
+    assert new_state['admin_status'] == 'down', f"got admin_status {new_state['admin_status']}"
 
 
 def test_set_fec():
@@ -82,6 +82,9 @@ def test_set_fec_implicit_downgrade():
     assert new_state['fec'] == 'none', f"got fec {new_state['fec']}"
 
 
+# Regression test for https://github.com/ansible-collections/community.sonic/issues/17:
+# disabling a port must not crash when CONFIG_DB has no admin_status field
+# (factory default) and must be idempotent once the port is down.
 @pytest.mark.parametrize('admin_status', (None, 'down', 'up'))
 def test_disable_is_idempotent(admin_status):
     port_table = copy.deepcopy(PORT_TABLE)
@@ -89,13 +92,44 @@ def test_disable_is_idempotent(admin_status):
         port_table['Ethernet0']['admin_status'] = admin_status
     old_state, new_state, ifname, changed = sonic_interface_port.mutate_state(
         port_table, interface='qsfp1', enabled=False)
-    assert changed == (admin_status is not None)
-    assert 'admin_status' not in new_state
     assert old_state == port_table['Ethernet0']
+    if admin_status == 'up':
+        assert changed, 'state was expected to change'
+        assert new_state['admin_status'] == 'down'
+    else:
+        # Absent admin_status means down in SONiC, so nothing changes.
+        assert not changed, 'state was not expected to change'
+        assert new_state == old_state
     _, repeated_state, _, repeated_changed = sonic_interface_port.mutate_state(
         {ifname: new_state}, interface=ifname, enabled=False)
     assert repeated_state == new_state
     assert not repeated_changed
+
+
+@pytest.mark.parametrize('admin_status', (None, 'down', 'up'))
+def test_enable_is_idempotent(admin_status):
+    port_table = copy.deepcopy(PORT_TABLE)
+    if admin_status is not None:
+        port_table['Ethernet0']['admin_status'] = admin_status
+    _, new_state, ifname, changed = sonic_interface_port.mutate_state(
+        port_table, interface='qsfp1', enabled=True)
+    assert changed == (admin_status != 'up')
+    assert new_state['admin_status'] == 'up'
+    _, repeated_state, _, repeated_changed = sonic_interface_port.mutate_state(
+        {ifname: new_state}, interface=ifname, enabled=True)
+    assert repeated_state == new_state
+    assert not repeated_changed
+
+
+@pytest.mark.parametrize('admin_status', (None, 'down', 'up'))
+def test_omitted_enabled_leaves_admin_status(admin_status):
+    port_table = copy.deepcopy(PORT_TABLE)
+    if admin_status is not None:
+        port_table['Ethernet0']['admin_status'] = admin_status
+    _, new_state, _, changed = sonic_interface_port.mutate_state(
+        port_table, interface='qsfp1', description='uplink')
+    assert changed
+    assert new_state.get('admin_status') == admin_status
 
 
 def test_description_without_configured_speed():

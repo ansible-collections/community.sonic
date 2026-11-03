@@ -28,7 +28,7 @@ def exit_json(**kwargs):
     (vlan_member, dict(vlanid=42, interface='Ethernet0', state='absent', tagged=None),
      'VLAN_MEMBER', 'Vlan42|Ethernet0', {'tagging_mode': 'tagged'}, None),
     (sonic_interface_port, dict(interface='Ethernet0', enabled=False),
-     'PORT', 'Ethernet0', {'speed': '10000', 'admin_status': 'up'}, {'speed': '10000'}),
+     'PORT', 'Ethernet0', {'speed': '10000', 'admin_status': 'up'}, {'speed': '10000', 'admin_status': 'down'}),
 ))
 @pytest.mark.parametrize('check_mode', (True, False))
 @pytest.mark.parametrize('already_applied', (True, False))
