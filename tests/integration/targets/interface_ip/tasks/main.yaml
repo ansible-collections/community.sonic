@@ -1,0 +1,371 @@
+---
+# Uses Ethernet24 (which must not be a VLAN or PortChannel member) and
+# Loopback2 with addresses from the documentation ranges. The default virtual
+# switch configuration may already have addresses on Ethernet24; the test reads
+# the tables first and only asserts on what it adds and removes itself.
+- name: Interface IP address tests
+  block:
+    - name: Read the INTERFACE table
+      community.sonic.get_entry:
+        table: INTERFACE
+      register: intf_table
+
+    - name: Read the VLAN_MEMBER table
+      community.sonic.get_entry:
+        table: VLAN_MEMBER
+      register: vlan_members
+
+    - name: Read the PORTCHANNEL_MEMBER table
+      community.sonic.get_entry:
+        table: PORTCHANNEL_MEMBER
+      register: pc_members
+
+    - name: Read the LOOPBACK_INTERFACE table
+      community.sonic.get_entry:
+        table: LOOPBACK_INTERFACE
+      register: lo_table
+
+    - name: Read the PORT entry of the test port
+      community.sonic.get_entry:
+        table: PORT
+        key: Ethernet24
+      register: port_entry
+
+    - name: Remember the initial state of the test port
+      ansible.builtin.set_fact:
+        eth_alias: '{{ port_entry.value.alias }}'
+        eth_parent_existed: "{{ 'Ethernet24' in intf_table.value }}"
+        eth_other_addresses: "{{ intf_table.value.keys() | select('match', '^Ethernet24[|]') | map('regex_replace', '^Ethernet24[|]', '') | list }}"
+
+    - name: Output the initial state
+      ansible.builtin.debug:
+        msg:
+          - 'Ethernet24 alias: {{ eth_alias }}'
+          - 'Ethernet24 L3 entry present: {{ eth_parent_existed }}'
+          - 'Ethernet24 existing addresses: {{ eth_other_addresses }}'
+
+    - name: Check the preconditions for the test
+      ansible.builtin.assert:
+        that:
+          - port_entry.value | length > 0
+          - "vlan_members.value.keys() | select('match', '^.*[|]Ethernet24$') | list | length == 0"
+          - "pc_members.value.keys() | select('match', '^.*[|]Ethernet24$') | list | length == 0"
+          - "'192.0.2.1/31' not in eth_other_addresses"
+          - "'2001:db8:2::1/64' not in eth_other_addresses"
+          - "lo_table.value.keys() | select('match', '^Loopback2($|[|])') | list | length == 0"
+        fail_msg: Ethernet24 or Loopback2 is already in use on the test device
+
+    - name: Add an IPv4 address (check mode)
+      community.sonic.interface_ip:
+        interface: Ethernet24
+        address: 192.0.2.1/31
+      check_mode: true
+      diff: true
+      register: check_add
+
+    - name: Check that check mode predicts the change
+      ansible.builtin.assert:
+        that:
+          - check_add is changed
+          - check_add.interface == 'Ethernet24'
+          - check_add.address == '192.0.2.1/31'
+          - check_add.table == 'INTERFACE'
+          - check_add.parent_created == (not eth_parent_existed)
+          - "check_add.diff.before == {}"
+          - "'Ethernet24|192.0.2.1/31' in check_add.diff.after"
+
+    - name: Read the INTERFACE table after check mode
+      community.sonic.get_entry:
+        table: INTERFACE
+      register: intf_table_after_check
+
+    - name: Check that check mode did not write
+      ansible.builtin.assert:
+        that:
+          - "'Ethernet24|192.0.2.1/31' not in intf_table_after_check.value"
+          - ('Ethernet24' in intf_table_after_check.value) == eth_parent_existed
+
+    - name: Add an IPv4 address
+      community.sonic.interface_ip:
+        interface: Ethernet24
+        address: 192.0.2.1/31
+      diff: true
+      register: add_v4
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - add_v4 is changed
+          - add_v4.interface == 'Ethernet24'
+          - add_v4.parent_created == (not eth_parent_existed)
+          - "'192.0.2.1/31' in add_v4.addresses"
+          - "add_v4.diff.after['Ethernet24|192.0.2.1/31'] == {}"
+
+    - name: Add the same address through the port alias
+      community.sonic.interface_ip:
+        interface: '{{ eth_alias }}'
+        address: 192.0.2.1/31
+      register: add_v4_again
+
+    - name: Check that the module is idempotent and resolves the alias
+      ansible.builtin.assert:
+        that:
+          - add_v4_again is not changed
+          - add_v4_again.interface == 'Ethernet24'
+          - not add_v4_again.parent_created
+
+    - name: Add an IPv6 address in non-canonical spelling
+      community.sonic.interface_ip:
+        interface: Ethernet24
+        address: '2001:DB8:2:0::1/64'
+      register: add_v6
+
+    - name: Check that the address is stored in canonical form
+      ansible.builtin.assert:
+        that:
+          - add_v6 is changed
+          - add_v6.address == '2001:db8:2::1/64'
+          - not add_v6.parent_created
+          - "'2001:db8:2::1/64' in add_v6.addresses"
+
+    - name: Add the IPv6 address again in canonical spelling
+      community.sonic.interface_ip:
+        interface: Ethernet24
+        address: '2001:db8:2::1/64'
+      register: add_v6_again
+
+    - name: Check that the spelling does not cause a change
+      ansible.builtin.assert:
+        that:
+          - add_v6_again is not changed
+
+    - name: Read the INTERFACE table
+      community.sonic.get_entry:
+        table: INTERFACE
+      register: intf_table_after_add
+
+    - name: Check the CONFIG_DB entries
+      ansible.builtin.assert:
+        that:
+          - "'Ethernet24' in intf_table_after_add.value"
+          - "'Ethernet24|192.0.2.1/31' in intf_table_after_add.value"
+          - "'Ethernet24|2001:db8:2::1/64' in intf_table_after_add.value"
+
+    - name: Wait for the IPv4 address to show up
+      ansible.builtin.command: show ip interfaces
+      changed_when: false
+      register: show_ip
+      retries: 15
+      delay: 2
+      until: show_ip.stdout is search('192[.]0[.]2[.]1/31')
+
+    - name: Output from show ip interfaces
+      ansible.builtin.debug:
+        msg: '{{ show_ip.stdout }}'
+
+    - name: Wait for the IPv6 address to show up
+      ansible.builtin.command: show ipv6 interfaces
+      changed_when: false
+      register: show_ipv6
+      retries: 15
+      delay: 2
+      until: show_ipv6.stdout is search('2001:db8:2::1/64')
+
+    - name: Output from show ipv6 interfaces
+      ansible.builtin.debug:
+        msg: '{{ show_ipv6.stdout }}'
+
+    - name: Add an address on a loopback that does not exist yet
+      community.sonic.interface_ip:
+        interface: Loopback2
+        address: 192.0.2.201/32
+      diff: true
+      register: add_lo
+
+    - name: Check that the parent entry was created
+      ansible.builtin.assert:
+        that:
+          - add_lo is changed
+          - add_lo.table == 'LOOPBACK_INTERFACE'
+          - add_lo.parent_created
+          - "add_lo.addresses == ['192.0.2.201/32']"
+          - "add_lo.diff.before == {}"
+          - "add_lo.diff.after == {'Loopback2': {}, 'Loopback2|192.0.2.201/32': {}}"
+
+    - name: Wait for the loopback address to show up
+      ansible.builtin.command: show ip interfaces
+      changed_when: false
+      register: show_ip_lo
+      retries: 15
+      delay: 2
+      until: show_ip_lo.stdout is search('192[.]0[.]2[.]201/32')
+
+    - name: Reject an address without prefix length
+      community.sonic.interface_ip:
+        interface: Ethernet24
+        address: 192.0.2.5
+      register: bad_address
+      ignore_errors: true
+
+    - name: Reject an address on an undefined VLAN interface
+      community.sonic.interface_ip:
+        interface: Vlan3999
+        address: 192.0.2.5/31
+      register: bad_vlan
+      ignore_errors: true
+
+    - name: Check the error messages
+      ansible.builtin.assert:
+        that:
+          - bad_address is failed
+          - "'must include a prefix length' in bad_address.msg"
+          - bad_vlan is failed
+          - bad_vlan.msg == 'interface "Vlan3999" does not exist'
+
+    - name: Remove the IPv4 address (check mode)
+      community.sonic.interface_ip:
+        interface: Ethernet24
+        address: 192.0.2.1/31
+        state: absent
+      check_mode: true
+      diff: true
+      register: check_remove
+
+    - name: Check that check mode predicts the removal
+      ansible.builtin.assert:
+        that:
+          - check_remove is changed
+          - not check_remove.parent_removed
+          - "check_remove.diff.before == {'Ethernet24|192.0.2.1/31': {}}"
+          - "check_remove.diff.after == {}"
+
+    - name: Remove the IPv4 address
+      community.sonic.interface_ip:
+        interface: Ethernet24
+        address: 192.0.2.1/31
+        state: absent
+      register: remove_v4
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - remove_v4 is changed
+          - not remove_v4.parent_removed
+          - "'192.0.2.1/31' not in remove_v4.addresses"
+          - "'2001:db8:2::1/64' in remove_v4.addresses"
+
+    - name: Remove the IPv6 address and the L3 entry if nothing else uses it
+      community.sonic.interface_ip:
+        interface: Ethernet24
+        address: '2001:db8:2::1/64'
+        state: absent
+        remove_parent: true
+      diff: true
+      register: remove_v6
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - remove_v6 is changed
+          - remove_v6.parent_removed == (eth_other_addresses | length == 0)
+          - remove_v6.addresses == eth_other_addresses | sort
+          - "'Ethernet24|2001:db8:2::1/64' in remove_v6.diff.before"
+          - "remove_v6.diff.after == {}"
+
+    - name: Read the INTERFACE table after removal
+      community.sonic.get_entry:
+        table: INTERFACE
+      register: intf_table_after_remove
+
+    - name: Check that the addresses are gone and the L3 entry is handled as expected
+      ansible.builtin.assert:
+        that:
+          - "'Ethernet24|192.0.2.1/31' not in intf_table_after_remove.value"
+          - "'Ethernet24|2001:db8:2::1/64' not in intf_table_after_remove.value"
+          - ('Ethernet24' in intf_table_after_remove.value) == (eth_other_addresses | length > 0)
+
+    - name: Wait for the addresses to disappear
+      ansible.builtin.command: show ip interfaces
+      changed_when: false
+      register: show_ip_after
+      retries: 15
+      delay: 2
+      until: show_ip_after.stdout is not search('192[.]0[.]2[.]1/31')
+
+    - name: Wait for the IPv6 address to disappear
+      ansible.builtin.command: show ipv6 interfaces
+      changed_when: false
+      register: show_ipv6_after
+      retries: 15
+      delay: 2
+      until: show_ipv6_after.stdout is not search('2001:db8:2::1/64')
+
+    - name: Remove the IPv4 address again
+      community.sonic.interface_ip:
+        interface: Ethernet24
+        address: 192.0.2.1/31
+        state: absent
+        remove_parent: true
+      register: remove_v4_again
+
+    - name: Check that removal is idempotent
+      ansible.builtin.assert:
+        that:
+          - remove_v4_again is not changed
+          - not remove_v4_again.parent_removed
+          - "remove_v4_again.diff.before == {}"
+          - "remove_v4_again.diff.after == {}"
+
+    - name: Remove the loopback address and its parent entry
+      community.sonic.interface_ip:
+        interface: Loopback2
+        address: 192.0.2.201/32
+        state: absent
+        remove_parent: true
+      diff: true
+      register: remove_lo
+
+    - name: Check that the parent entry was removed with the last address
+      ansible.builtin.assert:
+        that:
+          - remove_lo is changed
+          - remove_lo.parent_removed
+          - "remove_lo.addresses == []"
+          - "remove_lo.diff.before == {'Loopback2|192.0.2.201/32': {}, 'Loopback2': {}}"
+          - "remove_lo.diff.after == {}"
+
+    - name: Read the LOOPBACK_INTERFACE table after removal
+      community.sonic.get_entry:
+        table: LOOPBACK_INTERFACE
+      register: lo_table_after_remove
+
+    - name: Check that Loopback2 is gone
+      ansible.builtin.assert:
+        that:
+          - "lo_table_after_remove.value.keys() | select('match', '^Loopback2($|[|])') | list | length == 0"
+
+    - name: Wait for the loopback address to disappear
+      ansible.builtin.command: show ip interfaces
+      changed_when: false
+      register: show_ip_lo_after
+      retries: 15
+      delay: 2
+      until: show_ip_lo_after.stdout is not search('192[.]0[.]2[.]201/32')
+
+  always:
+    - name: Clean up the test addresses on Ethernet24
+      community.sonic.interface_ip:
+        interface: Ethernet24
+        address: '{{ item }}'
+        state: absent
+        remove_parent: '{{ not (eth_parent_existed | default(true) | bool) }}'
+      loop:
+        - 192.0.2.1/31
+        - '2001:db8:2::1/64'
+      ignore_errors: true
+
+    - name: Clean up Loopback2
+      community.sonic.loopback:
+        name: Loopback2
+        state: absent
+      ignore_errors: true
