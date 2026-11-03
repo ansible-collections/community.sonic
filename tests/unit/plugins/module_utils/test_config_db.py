@@ -299,7 +299,7 @@ def test_set_entry_delete_and_fallback_use_the_connector(fake_swsscommon, monkey
 
 def test_set_entry_failed_transaction_raises(fake_swsscommon, monkeypatch):
     db = connect(fake_swsscommon)
-    monkeypatch.setattr(fake_swsscommon.RedisTransactioner, 'exec', lambda self: False)
+    monkeypatch.setattr(fake_swsscommon.RedisTransactioner, '_exec', lambda self: False)
     with pytest.raises(config_db.ConfigDBError, match='transaction replacing VLAN Vlan1'):
         db.set_entry('VLAN', 'Vlan1', {'vlanid': '1'})
 

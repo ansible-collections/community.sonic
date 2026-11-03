@@ -213,7 +213,7 @@ class FakeRedisTransactioner(object):
         assert expected_type == 3, 'HSET/HDEL reply with an integer (type 3), got %r' % (expected_type,)
         self.queue.append(command.command)
 
-    def exec(self):
+    def _exec(self):  # SWIG renames the C++ ``exec()`` because it is a Python built-in
         commands, self.queue = self.queue, None
         self.client.apply(commands)
         return True

@@ -451,7 +451,9 @@ class ConfigDB(object):
             command = swsscommon.RedisCommand()
             command.formatHDEL(hash_name, field)
             transaction.enqueue(command, REDIS_REPLY_INTEGER)
-        if not transaction.exec():
+        # SWIG prefixes Python built-in names, so RedisTransactioner::exec() is ``_exec`` in the bindings.
+        execute = getattr(transaction, '_exec', None) or getattr(transaction, 'exec')
+        if not execute():
             raise ConfigDBError('the transaction replacing %s %s was not executed by redis' % (table, key))
         return True
 
