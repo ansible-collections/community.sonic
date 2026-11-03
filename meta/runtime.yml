@@ -1,2 +1,9 @@
 ---
 requires_ansible: '>=2.19.0'
+plugin_routing:
+  modules:
+    sonic_interface_port:
+      redirect: community.sonic.interface_port
+      deprecation:
+        removal_version: 2.0.0
+        warning_text: Use community.sonic.interface_port instead.

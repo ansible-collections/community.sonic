@@ -28,16 +28,17 @@ than calling `swsscommon` directly. Open issues
 [#36](https://github.com/ansible-collections/community.sonic/issues/36) list
 the modules we would like to see.
 
-### Naming convention (proposal, pending maintainer approval)
+### Naming convention
 
-New modules use short names without a `sonic_` prefix: `vlan`, `portchannel`,
+Modules use short names without a `sonic_` prefix: `vlan`, `portchannel`,
 `acl_table`, `feature`, `interface_ip`, ... The fully qualified name
 `community.sonic.vlan` already carries the collection name. Name a module after
 the CONFIG_DB object it manages, in singular form, and use `<parent>_member` for
-membership tables (`vlan_member`, `portchannel_member`). `sonic_interface_port`
-keeps its name for compatibility. Options are `snake_case`, booleans are
-Ansible booleans (`enabled: true`, not `admin_status: up`), and `state` takes
-`present`/`absent`.
+membership tables (`vlan_member`, `portchannel_member`). The one legacy module,
+`sonic_interface_port`, was renamed to `interface_port`; the old name is a
+deprecated redirect in `meta/runtime.yml` and is removed in 2.0.0. Options are
+`snake_case`, booleans are Ansible booleans (`enabled: true`, not
+`admin_status: up`), and `state` takes `present`/`absent`.
 
 ### The helper layer
 

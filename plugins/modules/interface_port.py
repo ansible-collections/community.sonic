@@ -12,7 +12,7 @@ __metaclass__ = type
 
 DOCUMENTATION = r'''
 ---
-module: sonic_interface_port
+module: interface_port
 short_description: Configure a SONiC interface port
 version_added: "0.0.1"
 description: Manage all settings related to interface ports in SONiC
@@ -63,13 +63,13 @@ author:
 EXAMPLES = r'''
 # Set the interface description of a port
 - name: Set port description
-  community.sonic.sonic_interface_port:
+  community.sonic.interface_port:
     interface: qsfp1
     description: This is the uplink
 
 # Set the interface description, speed, and state of a port
 - name: Set port description
-  community.sonic.sonic_interface_port:
+  community.sonic.interface_port:
     interface: qsfp1
     description: This is the uplink
     speed: 1G

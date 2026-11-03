@@ -23,7 +23,7 @@ An example says more than a thousand words, so here is an example:
   gather_facts: false
   tasks:
     - name: Set port description
-      community.sonic.sonic_interface_port:
+      community.sonic.interface_port:
         interface: qsfp1
         description: This is the uplink
         speed: 100G
