@@ -144,9 +144,40 @@ def test_build_rule_entry_errors(options, message):
 
 # -- pure logic: routing -------------------------------------------------------------------
 
+def combined_entries():
+    expected = dict(('BGP_CULL|' + k, v) for k, v in BGP_ENTRIES.items())
+    expected['BGP_CULL|PERMIT_ALL'] = dict(BGP_ENTRIES['PERMIT_ALL'], IP_TYPE='IP')
+    return expected
+
+
+def split_entries():
+    expected = dict(('BGP_CULL|' + k, v) for k, v in BGP_ENTRIES.items())
+    expected['BGP_CULL|PERMIT_ALL'] = dict(BGP_ENTRIES['PERMIT_ALL'], IP_TYPE='IPV4ANY')
+    expected.update(('BGP_CULL_v6|' + k, dict(v, IP_TYPE='IPV6ANY')) for k, v in BGP_ENTRIES.items())
+    return expected
+
+
 def test_route_rules_combined():
     desired = acl_rule.route_rules(BGP_RULES, 'combined', {'BGP_CULL': 'L3V4V6'})
-    assert desired == dict(('BGP_CULL|' + k, v) for k, v in BGP_ENTRIES.items())
+    assert desired == combined_entries()
+
+
+@pytest.mark.parametrize('table_type,extra', (
+    ('L3', {'IP_TYPE': 'IPV4ANY'}),
+    ('L3V6', {'IP_TYPE': 'IPV6ANY'}),
+    ('L3V4V6', {'IP_TYPE': 'IP'}),
+    ('MIRROR', {}),
+))
+def test_rules_without_match_get_a_default_match(table_type, extra):
+    # orchagent rejects rules without a match field; a bare permit/deny gets what acl-loader adds.
+    desired = acl_rule.route_rules([rule(action='drop'), rule(name='V', vlan_id=5)], None, {'X': table_type})
+    assert desired['X|R'] == dict({'PRIORITY': '10', 'PACKET_ACTION': 'DROP'}, **extra)
+    # A rule with a match of its own is left alone (an L3V6 table still pins family-less rules to IPv6).
+    assert desired['X|V'].get('IP_TYPE') == ('IPV6ANY' if table_type == 'L3V6' else None)
+    desired = acl_rule.route_rules([rule(action='redirect', redirect='Ethernet0')], None, {'X': table_type})
+    assert desired['X|R'] == dict({'PRIORITY': '10', 'REDIRECT_ACTION': 'Ethernet0'}, **extra)
+    desired = acl_rule.route_rules([rule(ip_type='ANY')], None, {'X': table_type})
+    assert desired['X|R'] == {'PRIORITY': '10', 'PACKET_ACTION': 'FORWARD', 'IP_TYPE': 'ANY'}
 
 
 def test_route_rules_combined_icmp_stays_ipv4():
@@ -162,8 +193,7 @@ def test_route_rules_split_duplicates_agnostic_rules():
         rule(name='PING', protocol='icmp', ip_type='IP'),
     ]
     desired = acl_rule.route_rules(rules, 'split', tables)
-    expected = dict(('BGP_CULL|' + k, v) for k, v in BGP_ENTRIES.items())
-    expected.update(('BGP_CULL_v6|' + k, dict(v, IP_TYPE='IPV6ANY')) for k, v in BGP_ENTRIES.items())
+    expected = split_entries()
     expected['BGP_CULL|V4'] = {'PRIORITY': '10', 'SRC_IP': '10.0.0.0/8', 'PACKET_ACTION': 'DROP'}
     expected['BGP_CULL_v6|V6'] = {'PRIORITY': '10', 'SRC_IPV6': '2001:db8::/32', 'PACKET_ACTION': 'DROP'}
     # protocol=icmp becomes ICMPv6 in the IPv6 table; an explicit ip_type is kept.
@@ -209,7 +239,7 @@ def test_create_combined(fake_swsscommon, run_module, monkeypatch, check_mode):
     fake_swsscommon.seed(PORTS).seed(COMBINED)
     orch = Orchagent(fake_swsscommon, monkeypatch)
     result = run_module(acl_rule, dict(table='BGP_CULL', rules=BGP_RULES, exclusive=True), check_mode=check_mode)
-    expected = dict(('BGP_CULL|' + k, v) for k, v in BGP_ENTRIES.items())
+    expected = combined_entries()
     assert result['changed'] is True
     assert result['tables'] == ['BGP_CULL']
     assert result['family_mode'] == 'combined'
@@ -229,8 +259,7 @@ def test_create_split(fake_swsscommon, run_module, monkeypatch, check_mode):
     fake_swsscommon.seed(PORTS).seed(SPLIT)
     Orchagent(fake_swsscommon, monkeypatch)
     result = run_module(acl_rule, dict(table='BGP_CULL', rules=BGP_RULES), check_mode=check_mode)
-    expected = dict(('BGP_CULL|' + k, v) for k, v in BGP_ENTRIES.items())
-    expected.update(('BGP_CULL_v6|' + k, dict(v, IP_TYPE='IPV6ANY')) for k, v in BGP_ENTRIES.items())
+    expected = split_entries()
     assert result['changed'] is True
     assert result['tables'] == ['BGP_CULL', 'BGP_CULL_v6']
     assert result['family_mode'] == 'split'
@@ -266,12 +295,13 @@ def test_idempotent_and_exclusive(fake_swsscommon, run_module, monkeypatch):
 
 
 def test_modify_rule(fake_swsscommon, run_module, monkeypatch):
-    fake_swsscommon.seed(PORTS).seed(COMBINED).seed({'ACL_RULE': {'BGP_CULL|PERMIT_ALL': BGP_ENTRIES['PERMIT_ALL']}})
+    before = dict(BGP_ENTRIES['PERMIT_ALL'], IP_TYPE='IP')
+    fake_swsscommon.seed(PORTS).seed(COMBINED).seed({'ACL_RULE': {'BGP_CULL|PERMIT_ALL': before}})
     Orchagent(fake_swsscommon, monkeypatch)
     result = run_module(acl_rule, dict(table='BGP_CULL', rules=[dict(name='PERMIT_ALL', priority=2, action='drop')]))
-    after = {'PRIORITY': '2', 'PACKET_ACTION': 'DROP'}
+    after = {'PRIORITY': '2', 'PACKET_ACTION': 'DROP', 'IP_TYPE': 'IP'}
     assert result['changed'] is True
-    assert result['diff'] == {'before': {'BGP_CULL|PERMIT_ALL': BGP_ENTRIES['PERMIT_ALL']}, 'after': {'BGP_CULL|PERMIT_ALL': after}}
+    assert result['diff'] == {'before': {'BGP_CULL|PERMIT_ALL': before}, 'after': {'BGP_CULL|PERMIT_ALL': after}}
     assert fake_swsscommon.writes == [('set_entry', 'ACL_RULE', 'BGP_CULL|PERMIT_ALL', after)]
 
 
@@ -313,7 +343,7 @@ def test_lone_l3_table_is_single(fake_swsscommon, run_module, monkeypatch):
     result = run_module(acl_rule, dict(table='DATAACL', rules=[rule()]))
     assert result['family_mode'] is None
     assert result['tables'] == ['DATAACL']
-    assert fake_swsscommon.get_table('ACL_RULE') == {'DATAACL|R': {'PRIORITY': '10', 'PACKET_ACTION': 'FORWARD'}}
+    assert fake_swsscommon.get_table('ACL_RULE') == {'DATAACL|R': {'PRIORITY': '10', 'PACKET_ACTION': 'FORWARD', 'IP_TYPE': 'IPV4ANY'}}
 
 
 def test_in_ports_alias(fake_swsscommon, run_module, monkeypatch):

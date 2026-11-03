@@ -23,6 +23,11 @@ description:
     TCP port 179", are written to both.
   - In an V(L3V6) table a rule that names no family gets C(IP_TYPE=IPV6ANY)
     unless O(rules[].ip_type) is given, and O(rules[].protocol=icmp) means ICMPv6.
+  - orchagent rejects a rule without any match field, so a bare permit-all or
+    deny-all rule gets an implicit C(IP_TYPE) match, V(IPV4ANY) in an V(L3) table,
+    V(IPV6ANY) in an V(L3V6) table and V(IP) (IPv4 and IPv6) in an V(L3V4V6) table.
+    Set O(rules[].ip_type) to choose something else, for example V(ANY) to also
+    match non-IP frames.
   - After writing, the module waits for orchagent to report every rule as
     C(Active) in C(STATE_DB) (C(ACL_RULE_TABLE)) and fails with the rejected
     rules otherwise. Which match fields an ASIC supports varies, so only
@@ -250,7 +255,7 @@ diff:
   description: The managed C(ACL_RULE) entries before and after the change, keyed by C(table|rule); removed rules are only in C(before).
   type: dict
   returned: always
-  sample: {"before": {}, "after": {"BGP_CULL|PERMIT_ALL": {"PRIORITY": "1", "PACKET_ACTION": "FORWARD"}}}
+  sample: {"before": {}, "after": {"BGP_CULL|PERMIT_ALL": {"PRIORITY": "1", "PACKET_ACTION": "FORWARD", "IP_TYPE": "IP"}}}
 '''
 
 import ipaddress
@@ -483,13 +488,27 @@ def build_rule_entry(rule, resolve_port=None):
     return entry, family
 
 
+#: Match orchagent needs for a rule that has no match fields of its own, per table type.
+DEFAULT_MATCH = {
+    acl.TYPE_L3: ('IP_TYPE', 'IPV4ANY'),
+    acl.TYPE_L3V6: ('IP_TYPE', 'IPV6ANY'),
+    acl.TYPE_L3V4V6: ('IP_TYPE', 'IP'),
+}
+
+
+def has_match(entry):
+    """Return ``True`` if the entry has at least one match field (anything but the priority and actions)."""
+    return any(k != 'PRIORITY' and not k.endswith('_ACTION') for k in entry)
+
+
 def entry_for_table(entry, family, table_type):
     """Adapt a family neutral entry to the table it is written to.
 
     In an ``L3V6`` table ``protocol=icmp`` becomes ICMPv6 and a rule that
     names no family gets ``IP_TYPE=IPV6ANY`` so it only matches IPv6, the
     way ``acl-loader`` does it (ether type matching is not available in
-    IPv6 tables).
+    IPv6 tables). orchagent rejects a rule without any match field, so a
+    bare permit-all or deny-all gets the :data:`DEFAULT_MATCH` of its table type.
     """
     entry = dict(entry)
     if table_type == acl.TYPE_L3V6:
@@ -497,6 +516,9 @@ def entry_for_table(entry, family, table_type):
             entry['IP_PROTOCOL'] = str(PROTO_ICMPV6)
         if family is None and 'IP_TYPE' not in entry:
             entry['IP_TYPE'] = 'IPV6ANY'
+    if not has_match(entry) and table_type in DEFAULT_MATCH:
+        field, value = DEFAULT_MATCH[table_type]
+        entry[field] = value
     return entry
 
 

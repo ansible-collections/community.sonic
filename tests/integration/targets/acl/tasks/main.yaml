@@ -232,6 +232,13 @@
           - acl_rules.value[item ~ '|PERMIT_ALL'].PACKET_ACTION == 'FORWARD'
       loop: "{{ cull.tables }}"
 
+    - name: Check a permit-all rule got the match orchagent needs
+      ansible.builtin.assert:
+        that:
+          - cull.family_mode != 'combined' or acl_rules.value[acl_name ~ '|PERMIT_ALL'].IP_TYPE == 'IP'
+          - cull.family_mode != 'split' or acl_rules.value[acl_name ~ '|PERMIT_ALL'].IP_TYPE == 'IPV4ANY'
+          - cull.family_mode != 'split' or acl_rules.value[acl_name ~ '_v6|PERMIT_ALL'].IP_TYPE == 'IPV6ANY'
+
     - name: Check the IPv6 copies of a split policy carry IP_TYPE IPV6ANY
       ansible.builtin.assert:
         that:
@@ -569,7 +576,8 @@
           - split_rule_entries.value[acl_split_name ~ '_v6|PING'].IP_PROTOCOL == '58'
           - split_rule_entries.value[acl_split_name ~ '_v6|PING'].IP_TYPE == 'IPV6ANY'
           - split_rule_entries.value[acl_split_name ~ '_v6|PERMIT_ALL'].IP_TYPE == 'IPV6ANY'
-          - "'IP_TYPE' not in split_rule_entries.value[acl_split_name ~ '|PERMIT_ALL']"
+          - split_rule_entries.value[acl_split_name ~ '|PERMIT_ALL'].IP_TYPE == 'IPV4ANY'
+          - "'IP_TYPE' not in split_rule_entries.value[acl_split_name ~ '|PING']"
 
     - name: Predict removing the split policy
       community.sonic.acl_table:
