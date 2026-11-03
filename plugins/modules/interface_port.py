@@ -55,6 +55,46 @@ options:
             - Omitting this option leaves the admin status untouched.
         required: false
         type: bool
+    laser_frequency:
+        description:
+            - Laser frequency in GHz for tunable or coherent optics such as 400ZR/ZR+ modules,
+              for example V(194900). Stored in the C(laser_freq) field of the C(PORT) table
+              and applied to the module by C(xcvrd).
+            - Only meaningful for tunable modules. The value is written as-is and not
+              validated against the inserted optic; the platform reports an unsupported
+              frequency.
+            - V(0) removes the field from CONFIG_DB. C(xcvrd) treats a missing or zero
+              frequency as "not configured".
+            - Omitting this option leaves the field untouched.
+        required: false
+        type: int
+        version_added: 0.4.0
+    tx_power:
+        description:
+            - Transmit output power in dBm for coherent optics, for example V(-10). Stored in
+              the C(tx_power) field of the C(PORT) table and applied to the module by C(xcvrd).
+            - Only meaningful for modules with a configurable output power. The value is
+              written as-is and not validated against the inserted optic.
+            - V(0) removes the field from CONFIG_DB. C(xcvrd) treats a missing or zero
+              TX power as "not configured".
+            - Omitting this option leaves the field untouched.
+        required: false
+        type: float
+        version_added: 0.4.0
+    dom_polling:
+        description:
+            - Whether C(xcvrd) polls the Digital Optical Monitoring (DOM) data of the
+              transceiver. Stored in the C(dom_polling) field of the C(PORT) table.
+            - V(default) removes the field from CONFIG_DB so SONiC applies its platform
+              default, which is polling enabled.
+            - Omitting this option leaves the field untouched.
+        choices:
+            - enabled
+            - disabled
+            - default
+        required: false
+        type: str
+        version_added: 0.4.0
 
 author:
     - Christian Svensson (@bluecmd)
@@ -74,6 +114,26 @@ EXAMPLES = r'''
     description: This is the uplink
     speed: 1G
     enabled: True
+
+# Tune the coherent optic on a long-haul link
+- name: Set laser frequency and TX power on a 400ZR port
+  community.sonic.interface_port:
+    interface: qsfp1
+    description: "Link: remote-site (400ZR)"
+    speed: 400G
+    fec: rs
+    laser_frequency: 194900
+    tx_power: -10
+    dom_polling: enabled
+    enabled: true
+
+# Clear the transceiver settings again
+- name: Remove laser frequency, TX power and DOM polling settings
+  community.sonic.interface_port:
+    interface: qsfp1
+    laser_frequency: 0
+    tx_power: 0
+    dom_polling: default
 '''
 
 RETURN = r'''
@@ -104,6 +164,10 @@ class NoSuchInterfaceError(ModuleError, UnknownInterfaceError):
 
 
 class InvalidSpeedError(ModuleError):
+    pass
+
+
+class InvalidValueError(ModuleError):
     pass
 
 
@@ -166,7 +230,10 @@ def mutate_state(port_table,
                  description=None,
                  enabled=None,
                  speed=None,
-                 fec=None):
+                 fec=None,
+                 laser_frequency=None,
+                 tx_power=None,
+                 dom_polling=None):
     changed = False
     try:
         ifname = resolve_port_name(port_table, interface)
@@ -219,7 +286,49 @@ def mutate_state(port_table,
         changed = changed or (
             new_state.get('fec') != current_state.get('fec'))
 
+    # Transceiver settings. xcvrd reads these fields from CONFIG_DB and
+    # programs the module; a missing or zero laser_freq/tx_power means "not
+    # configured" to xcvrd, so 0 is used to remove the field.
+    if laser_frequency is not None:
+        if laser_frequency < 0:
+            raise InvalidValueError(
+                f'invalid laser_frequency "{laser_frequency}": expected a frequency in GHz, or 0 to clear')
+        if laser_frequency == 0:
+            new_state.pop('laser_freq', None)
+        else:
+            new_state['laser_freq'] = str(laser_frequency)
+        changed = changed or (
+            new_state.get('laser_freq') != current_state.get('laser_freq'))
+
+    if tx_power is not None:
+        if tx_power == 0:
+            new_state.pop('tx_power', None)
+        elif not _same_float(current_state.get('tx_power'), tx_power):
+            # Store the value the way "config interface transceiver tx_power"
+            # does (str(float)), keeping an existing numerically equal value.
+            new_state['tx_power'] = str(float(tx_power))
+        changed = changed or (
+            new_state.get('tx_power') != current_state.get('tx_power'))
+
+    if dom_polling is not None:
+        if dom_polling == 'default':
+            new_state.pop('dom_polling', None)
+        else:
+            new_state['dom_polling'] = dom_polling
+        changed = changed or (
+            new_state.get('dom_polling') != current_state.get('dom_polling'))
+
     return (current_state, new_state, ifname, changed)
+
+
+def _same_float(current, wanted):
+    """True if the CONFIG_DB string ``current`` holds the same number as ``wanted``."""
+    if current is None:
+        return False
+    try:
+        return float(current) == float(wanted)
+    except (TypeError, ValueError):
+        return False
 
 
 def run_module():
@@ -229,6 +338,9 @@ def run_module():
         enabled=dict(type='bool', required=False),
         speed=dict(type='str', required=False),
         fec=dict(type='str', required=False, choices=['none', 'rs', 'fc', 'auto']),
+        laser_frequency=dict(type='int', required=False),
+        tx_power=dict(type='float', required=False),
+        dom_polling=dict(type='str', required=False, choices=['enabled', 'disabled', 'default']),
     )
 
     module = AnsibleModule(

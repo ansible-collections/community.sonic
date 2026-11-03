@@ -1,0 +1,3 @@
+---
+minor_changes:
+  - interface_port - add the ``laser_frequency``, ``tx_power`` and ``dom_polling`` options to manage the transceiver settings (``laser_freq``, ``tx_power`` and ``dom_polling`` fields of the ``PORT`` table) that tunable and coherent optics need; ``xcvrd`` applies them to the module. Omitting an option leaves the field untouched, ``laser_frequency=0``, ``tx_power=0`` and ``dom_polling=default`` remove it (https://github.com/ansible-collections/community.sonic/issues/21).

@@ -138,3 +138,184 @@ def test_description_without_configured_speed():
         port_table, interface='qsfp1', description='uplink')
     assert changed
     assert new_state == {'alias': 'qsfp1', 'fec': 'rs', 'description': 'uplink'}
+
+
+# Transceiver settings (https://github.com/ansible-collections/community.sonic/issues/21)
+
+TRANSCEIVER_CASES = (
+    # option, CONFIG_DB field, value, stored value, other value, other stored value
+    ('laser_frequency', 'laser_freq', 194900, '194900', 193100, '193100'),
+    ('tx_power', 'tx_power', -10, '-10.0', -8.5, '-8.5'),
+    ('dom_polling', 'dom_polling', 'enabled', 'enabled', 'disabled', 'disabled'),
+)
+
+TRANSCEIVER_CLEAR = {
+    'laser_frequency': 0,
+    'tx_power': 0,
+    'dom_polling': 'default',
+}
+
+
+@pytest.mark.parametrize('option,field,value,stored,other,other_stored', TRANSCEIVER_CASES)
+def test_transceiver_set(option, field, value, stored, other, other_stored):
+    _, new_state, _, changed = interface_port.mutate_state(
+        PORT_TABLE, interface='qsfp1', **{option: value})
+    assert changed, 'state was expected to change'
+    assert new_state[field] == stored
+    # Other fields are left alone
+    assert new_state['speed'] == '10000'
+    assert new_state['alias'] == 'qsfp1'
+
+
+@pytest.mark.parametrize('option,field,value,stored,other,other_stored', TRANSCEIVER_CASES)
+def test_transceiver_change(option, field, value, stored, other, other_stored):
+    port_table = copy.deepcopy(PORT_TABLE)
+    port_table['Ethernet0'][field] = stored
+    _, new_state, _, changed = interface_port.mutate_state(
+        port_table, interface='qsfp1', **{option: other})
+    assert changed, 'state was expected to change'
+    assert new_state[field] == other_stored
+
+
+@pytest.mark.parametrize('option,field,value,stored,other,other_stored', TRANSCEIVER_CASES)
+def test_transceiver_unchanged(option, field, value, stored, other, other_stored):
+    port_table = copy.deepcopy(PORT_TABLE)
+    port_table['Ethernet0'][field] = stored
+    old_state, new_state, _, changed = interface_port.mutate_state(
+        port_table, interface='qsfp1', **{option: value})
+    assert not changed, 'state was not expected to change'
+    assert new_state == old_state
+
+
+@pytest.mark.parametrize('option,field,value,stored,other,other_stored', TRANSCEIVER_CASES)
+def test_transceiver_omitted_leaves_field(option, field, value, stored, other, other_stored):
+    port_table = copy.deepcopy(PORT_TABLE)
+    port_table['Ethernet0'][field] = stored
+    _, new_state, _, changed = interface_port.mutate_state(
+        port_table, interface='qsfp1', description='uplink')
+    assert changed
+    assert new_state[field] == stored
+
+
+@pytest.mark.parametrize('option,field,value,stored,other,other_stored', TRANSCEIVER_CASES)
+def test_transceiver_clear(option, field, value, stored, other, other_stored):
+    port_table = copy.deepcopy(PORT_TABLE)
+    port_table['Ethernet0'][field] = stored
+    _, new_state, ifname, changed = interface_port.mutate_state(
+        port_table, interface='qsfp1', **{option: TRANSCEIVER_CLEAR[option]})
+    assert changed, 'state was expected to change'
+    assert field not in new_state
+    # Clearing an already absent field is idempotent
+    old_state, repeated_state, _, repeated_changed = interface_port.mutate_state(
+        {ifname: new_state}, interface=ifname, **{option: TRANSCEIVER_CLEAR[option]})
+    assert not repeated_changed, 'state was not expected to change'
+    assert repeated_state == old_state
+
+
+def test_transceiver_clear_absent_field_is_noop():
+    old_state, new_state, _, changed = interface_port.mutate_state(
+        PORT_TABLE, interface='qsfp1', laser_frequency=0, tx_power=0, dom_polling='default')
+    assert not changed, 'state was not expected to change'
+    assert new_state == old_state
+
+
+def test_transceiver_set_all_then_idempotent():
+    _, new_state, ifname, changed = interface_port.mutate_state(
+        PORT_TABLE, interface='qsfp1', laser_frequency=194900, tx_power=-10, dom_polling='disabled')
+    assert changed
+    assert new_state['laser_freq'] == '194900'
+    assert new_state['tx_power'] == '-10.0'
+    assert new_state['dom_polling'] == 'disabled'
+    _, repeated_state, _, repeated_changed = interface_port.mutate_state(
+        {ifname: new_state}, interface=ifname, laser_frequency=194900, tx_power=-10, dom_polling='disabled')
+    assert not repeated_changed
+    assert repeated_state == new_state
+
+
+# A TX power written by hand or by the CLI as "-10" rather than "-10.0" must
+# compare equal numerically and must not be rewritten.
+@pytest.mark.parametrize('stored', ('-10', '-10.0', '-10.00'))
+def test_tx_power_numeric_comparison(stored):
+    port_table = copy.deepcopy(PORT_TABLE)
+    port_table['Ethernet0']['tx_power'] = stored
+    old_state, new_state, _, changed = interface_port.mutate_state(
+        port_table, interface='qsfp1', tx_power=-10.0)
+    assert not changed
+    assert new_state == old_state
+
+
+def test_tx_power_fractional():
+    _, new_state, _, changed = interface_port.mutate_state(
+        PORT_TABLE, interface='qsfp1', tx_power=-7.5)
+    assert changed
+    assert new_state['tx_power'] == '-7.5'
+
+
+def test_negative_laser_frequency_is_rejected():
+    with pytest.raises(interface_port.InvalidValueError):
+        interface_port.mutate_state(PORT_TABLE, interface='qsfp1', laser_frequency=-1)
+
+
+# End-to-end through run_module with the fake CONFIG_DB: writes, idempotency,
+# clearing and check mode.
+SEED = {'PORT': {'Ethernet28': {'alias': 'etp8', 'speed': '100000', 'admin_status': 'up'}}}
+
+
+def test_module_sets_transceiver_fields(fake_swsscommon, run_module):
+    fake_swsscommon.seed(SEED)
+    params = dict(interface='etp8', laser_frequency=194900, tx_power=-10, dom_polling='enabled')
+    result = run_module(interface_port, params)
+    assert result['changed'] is True
+    assert result['interface'] == 'Ethernet28'
+    entry = fake_swsscommon.get_entry('PORT', 'Ethernet28')
+    assert entry['laser_freq'] == '194900'
+    assert entry['tx_power'] == '-10.0'
+    assert entry['dom_polling'] == 'enabled'
+    assert entry['speed'] == '100000'
+    assert entry['admin_status'] == 'up'
+    assert result['diff']['after'] == entry
+
+    repeated = run_module(interface_port, params)
+    assert repeated['changed'] is False
+    assert fake_swsscommon.get_entry('PORT', 'Ethernet28') == entry
+
+
+def test_module_clears_transceiver_fields(fake_swsscommon, run_module):
+    fake_swsscommon.seed({'PORT': {'Ethernet28': {
+        'alias': 'etp8', 'speed': '100000', 'laser_freq': '194900', 'tx_power': '-10.0', 'dom_polling': 'disabled'}}})
+    params = dict(interface='Ethernet28', laser_frequency=0, tx_power=0, dom_polling='default')
+    result = run_module(interface_port, params)
+    assert result['changed'] is True
+    entry = fake_swsscommon.get_entry('PORT', 'Ethernet28')
+    assert entry == {'alias': 'etp8', 'speed': '100000'}
+    assert result['diff']['before']['laser_freq'] == '194900'
+    assert result['diff']['after'] == entry
+
+    repeated = run_module(interface_port, params)
+    assert repeated['changed'] is False
+
+
+def test_module_check_mode_does_not_write(fake_swsscommon, run_module):
+    fake_swsscommon.seed(SEED)
+    result = run_module(interface_port, dict(interface='Ethernet28', laser_frequency=194900, dom_polling='disabled'),
+                        check_mode=True)
+    assert result['changed'] is True
+    assert result['diff']['after']['laser_freq'] == '194900'
+    assert result['diff']['after']['dom_polling'] == 'disabled'
+    assert fake_swsscommon.writes == []
+    assert fake_swsscommon.get_entry('PORT', 'Ethernet28') == SEED['PORT']['Ethernet28']
+
+
+def test_module_rejects_invalid_dom_polling(fake_swsscommon, run_module):
+    fake_swsscommon.seed(SEED)
+    result = run_module(interface_port, dict(interface='Ethernet28', dom_polling='maybe'), expect_failure=True)
+    assert result['failed'] is True
+    assert 'dom_polling' in result['msg']
+
+
+def test_module_rejects_negative_laser_frequency(fake_swsscommon, run_module):
+    fake_swsscommon.seed(SEED)
+    result = run_module(interface_port, dict(interface='Ethernet28', laser_frequency=-5), expect_failure=True)
+    assert result['failed'] is True
+    assert 'laser_frequency' in result['msg']
+    assert fake_swsscommon.writes == []
