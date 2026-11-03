@@ -25,7 +25,7 @@ description:
     C(/etc/resolv.conf) in sorted order, so the order of O(servers) is not
     preserved on the device.
   - Static nameservers are only supported from SONiC 202305 on. The module fails
-    on older releases, which have no C(sonic-system-dns) YANG model, instead of
+    on older releases, which have no C(sonic-dns) YANG model, instead of
     silently writing a table that nothing reads.
 extends_documentation_fragment:
   - community.sonic.attributes
@@ -113,12 +113,12 @@ from ansible_collections.community.sonic.plugins.module_utils.config_db import C
 
 TABLE = 'DNS_NAMESERVER'
 
-#: SONiC enforces this limit in the CLI and in the sonic-system-dns YANG model.
+#: SONiC enforces this limit in the CLI and in the sonic-dns YANG model.
 MAX_NAMESERVERS = 3
 
 #: Where SONiC installs its YANG models; the DNS model only exists on releases that manage DNS_NAMESERVER.
 YANG_MODEL_DIR = '/usr/local/yang-models'
-DNS_YANG_MODEL = 'sonic-system-dns.yang'
+DNS_YANG_MODEL = 'sonic-dns.yang'
 
 
 def canonical_address(address):
@@ -177,7 +177,7 @@ def release_supports_dns(yang_dir=None):
     """Return False when this SONiC release installs YANG models but not the DNS one.
 
     The ``DNS_NAMESERVER`` table and the ``hostcfgd`` code that consumes it
-    arrived together with ``sonic-system-dns.yang`` in SONiC 202305. When the
+    arrived together with ``sonic-dns.yang`` in SONiC 202305. When the
     YANG directory is missing altogether nothing can be concluded and the
     release is assumed to support it.
     """

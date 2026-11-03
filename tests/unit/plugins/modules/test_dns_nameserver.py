@@ -62,7 +62,7 @@ def test_plan_matches_stored_keys_by_canonical_form():
 def test_release_supports_dns(tmp_path):
     assert dns_nameserver.release_supports_dns(str(tmp_path / 'missing')) is True
     assert dns_nameserver.release_supports_dns(str(tmp_path)) is False
-    (tmp_path / dns_nameserver.DNS_YANG_MODEL).write_text('module sonic-system-dns {}')
+    (tmp_path / dns_nameserver.DNS_YANG_MODEL).write_text('module sonic-dns {}')
     assert dns_nameserver.release_supports_dns(str(tmp_path)) is True
 
 
@@ -224,6 +224,6 @@ def test_unsupported_release_fails(fake_swsscommon, run_module, monkeypatch, tmp
     monkeypatch.setattr(dns_nameserver, 'YANG_MODEL_DIR', str(tmp_path))
     result = run_module(dns_nameserver, dict(address=V4), expect_failure=True)
     assert 'does not support static DNS nameservers' in result['msg']
-    assert 'sonic-system-dns.yang' in result['msg']
+    assert 'sonic-dns.yang' in result['msg']
     assert fake_swsscommon.writes == []
     assert fake_swsscommon.connectors == []
