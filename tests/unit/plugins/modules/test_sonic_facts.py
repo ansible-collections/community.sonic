@@ -133,8 +133,10 @@ def warnings(monkeypatch):
     (['all', '!min'], {'config_db', 'saved_config_db'}),
     (['config_db', '!min'], {'config_db'}),
     (['!all'], {'min'}),
-    (['!all', 'config_db'], {'min'}),
+    (['!all', 'config_db'], {'min', 'config_db'}),
     (['!all', '!min'], set()),
+    (['!all', '!min', 'saved_config_db'], {'saved_config_db'}),
+    (['config_db', '!all', '!config_db'], {'min'}),
 ))
 def test_resolve_subsets(requested, expected):
     assert sonic_facts.resolve_subsets(requested) == expected
@@ -281,6 +283,14 @@ def test_negated_subsets(fake_swsscommon, run_module, files, warnings):
     sonic = run_module(sonic_facts, dict(gather_subset=['!all']))['ansible_facts']['sonic']
     assert 'hwsku' in sonic
     assert 'config_db' not in sonic
+
+    sonic = run_module(sonic_facts, dict(gather_subset=['!all', 'config_db']))['ansible_facts']['sonic']
+    assert 'hwsku' in sonic
+    assert 'config_db' in sonic
+    assert 'saved_config_db' not in sonic
+
+    sonic = run_module(sonic_facts, dict(gather_subset=['!all', '!min', 'saved_config_db']))['ansible_facts']['sonic']
+    assert list(sonic) == ['saved_config_db']
 
 
 def test_unreadable_files_warn(fake_swsscommon, run_module, files, warnings):

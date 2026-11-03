@@ -40,7 +40,7 @@ options:
       - V(min) collects the basic device facts (platform, HWSKU, ASIC type,
         hostname, MAC address, version, management VRF state and feature
         states). It is cheap and is always included unless it is explicitly
-        excluded with V(!min) or V(!all).
+        excluded with V(!min).
       - V(config_db) adds the complete running configuration database as
         RV(ansible_facts.sonic.config_db). This can be large.
       - V(saved_config_db) adds the parsed C(/etc/sonic/config_db.json) as
@@ -51,6 +51,10 @@ options:
         M(ansible.builtin.setup). When only exclusions are given the module
         starts from V(all), so V(['!saved_config_db']) collects the basic facts
         and the running configuration database.
+      - V(!all) drops everything except V(min) and the subsets that are named
+        explicitly, so V(['!all', 'config_db']) collects the basic facts and
+        the running configuration database and V(['!all', '!min', 'config_db'])
+        only the running configuration database.
     type: list
     elements: str
     default: [min]
@@ -248,33 +252,44 @@ def resolve_subsets(requested):
     """Expand a ``gather_subset`` list into the set of subsets to gather.
 
     Mirrors ``ansible.builtin.setup``: ``all`` expands to every subset, a
-    ``!`` prefix excludes a subset (``!all`` excludes everything) and ``min``
-    is included unless it is explicitly excluded. When only exclusions are
-    given the starting point is ``all``.
+    ``!`` prefix excludes a subset (``!all`` excludes everything but ``min``
+    and the subsets named explicitly) and ``min`` is included unless it is
+    explicitly excluded. When only exclusions are given the starting point
+    is ``all``.
 
     Raises :class:`ValueError` for an unknown subset name.
     """
     include = set()
     exclude = set()
+    exclude_all = set()
+    named = set()
     for item in requested or []:
         name = str(item).strip()
         negate = name.startswith('!')
         if negate:
             name = name[1:].strip()
         if name == 'all':
-            # ``!all`` keeps ``min``, which has to be excluded explicitly with ``!min``.
-            names = set(SUBSETS) - set(['min']) if negate else set(SUBSETS)
+            if negate:
+                # ``!all`` keeps ``min``, which has to be excluded explicitly with ``!min``.
+                exclude_all.update(set(SUBSETS) - set(['min']))
+            else:
+                include.update(SUBSETS)
         elif name in SUBSETS:
-            names = set([name])
+            if negate:
+                exclude.add(name)
+            else:
+                include.add(name)
+                named.add(name)
         else:
             raise ValueError('unknown gather_subset "%s"; expected one of all, %s (optionally prefixed with !)'
                              % (item, ', '.join(SUBSETS)))
-        (exclude if negate else include).update(names)
 
     if not include:
-        include = set(SUBSETS) if exclude else set(['min'])
+        include = set(SUBSETS) if exclude or exclude_all else set(['min'])
     include.add('min')
-    return include - exclude
+    # A subset named explicitly survives ``!all``, like with ``ansible.builtin.setup``:
+    # ``['!all', 'config_db']`` gathers ``min`` and ``config_db``. ``!<name>`` always excludes.
+    return include - exclude - (exclude_all - named)
 
 
 def parse_flat_yaml(text):
