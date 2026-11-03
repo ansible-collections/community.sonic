@@ -1,0 +1,158 @@
+---
+# The facts module never writes anything, so there is nothing to restore.
+# The virtual switch has hostname "sonic"; the other values are compared
+# against the SONiC CLI rather than hardcoded.
+- name: Gather the basic SONiC facts
+  community.sonic.sonic_facts:
+  register: min_facts
+
+- name: Output from sonic_facts
+  ansible.builtin.debug:
+    msg: '{{ min_facts }}'
+
+- name: Check the basic facts
+  ansible.builtin.assert:
+    that:
+      - min_facts is not changed
+      - min_facts.warnings | default([]) | length == 0
+      - ansible_facts.sonic.platform | length > 0
+      - ansible_facts.sonic.hwsku | length > 0
+      - ansible_facts.sonic.asic_type | length > 0
+      - ansible_facts.sonic.hostname == 'sonic'
+      - ansible_facts.sonic.mac is match('^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
+      - ansible_facts.sonic.version | length > 0
+      - ansible_facts.sonic.kernel | length > 0
+      - ansible_facts.sonic.debian | length > 0
+      - ansible_facts.sonic.build.commit_id | length > 0
+      - ansible_facts.sonic.version_info.build_version == ansible_facts.sonic.version
+      - ansible_facts.sonic.mgmt_vrf_enabled is boolean
+      - ansible_facts.sonic.features is mapping
+      - "'database' in ansible_facts.sonic.features"
+      - ansible_facts.sonic.features.database in ['enabled', 'always_enabled']
+      - "'config_db' not in ansible_facts.sonic"
+      - "'saved_config_db' not in ansible_facts.sonic"
+
+- name: Query the system for the platform summary
+  ansible.builtin.command: show platform summary
+  changed_when: false
+  register: platform_summary
+
+- name: Output from system command
+  ansible.builtin.debug:
+    msg: '{{ platform_summary.stdout }}'
+
+- name: Check the facts match the platform summary
+  ansible.builtin.assert:
+    that:
+      - platform_summary.stdout is search('(?m)^Platform:\\s+' ~ (ansible_facts.sonic.platform | regex_escape) ~ '\\s*$')
+      - platform_summary.stdout is search('(?m)^HwSKU:\\s+' ~ (ansible_facts.sonic.hwsku | regex_escape) ~ '\\s*$')
+      - platform_summary.stdout is search('(?m)^ASIC:\\s+' ~ (ansible_facts.sonic.asic_type | regex_escape) ~ '\\s*$')
+
+- name: Query the system for the software version
+  ansible.builtin.command: show version
+  changed_when: false
+  register: show_version
+
+- name: Output from system command
+  ansible.builtin.debug:
+    msg: '{{ show_version.stdout }}'
+
+- name: Check the facts match show version
+  ansible.builtin.assert:
+    that:
+      - show_version.stdout is search('(?m)^SONiC Software Version:\\s+' ~ (ansible_facts.sonic.version | regex_escape) ~ '\\s*$')
+      - show_version.stdout is search('(?m)^Kernel:\\s+' ~ (ansible_facts.sonic.kernel | regex_escape) ~ '\\s*$')
+      - show_version.stdout is search('(?m)^Build commit:\\s+' ~ (ansible_facts.sonic.build.commit_id | regex_escape) ~ '\\s*$')
+
+- name: Gather the facts and the running configuration database
+  community.sonic.sonic_facts:
+    gather_subset:
+      - min
+      - config_db
+  register: config_db_facts
+
+- name: Check the running configuration database is returned
+  ansible.builtin.assert:
+    that:
+      - config_db_facts is not changed
+      - config_db_facts.warnings | default([]) | length == 0
+      - ansible_facts.sonic.hwsku | length > 0
+      - "'PORT' in ansible_facts.sonic.config_db"
+      - ansible_facts.sonic.config_db.PORT | length > 0
+      - ansible_facts.sonic.config_db.DEVICE_METADATA.localhost.hwsku == ansible_facts.sonic.hwsku
+      - ansible_facts.sonic.config_db.DEVICE_METADATA.localhost.hostname == ansible_facts.sonic.hostname
+      - "'saved_config_db' not in ansible_facts.sonic"
+
+- name: Compare the running configuration database with get_entry
+  community.sonic.get_entry:
+    table: PORT
+  register: port_table
+
+- name: Check the running configuration database matches get_entry
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.sonic.config_db.PORT == port_table.value
+
+- name: Gather the running configuration database in check mode
+  community.sonic.sonic_facts:
+    gather_subset:
+      - config_db
+  check_mode: true
+  register: check_mode_facts
+
+- name: Check mode gathers the same facts
+  ansible.builtin.assert:
+    that:
+      - check_mode_facts is not changed
+      - check_mode_facts.ansible_facts.sonic.config_db.PORT == port_table.value
+      - check_mode_facts.ansible_facts.sonic.hwsku == ansible_facts.sonic.hwsku
+
+- name: Check whether the saved configuration is readable
+  ansible.builtin.command: test -r /etc/sonic/config_db.json
+  changed_when: false
+  failed_when: false
+  register: saved_config_readable
+
+- name: Gather the facts and the saved configuration database
+  community.sonic.sonic_facts:
+    gather_subset:
+      - saved_config_db
+  register: saved_facts
+
+- name: Output from sonic_facts
+  ansible.builtin.debug:
+    msg: '{{ saved_facts.warnings | default([]) }}'
+
+- name: Check the saved configuration database is returned
+  ansible.builtin.assert:
+    that:
+      - saved_facts is not changed
+      - saved_facts.warnings | default([]) | length == 0
+      - ansible_facts.sonic.hwsku | length > 0
+      - "'config_db' not in ansible_facts.sonic"
+      - "'DEVICE_METADATA' in ansible_facts.sonic.saved_config_db"
+      - ansible_facts.sonic.saved_config_db.DEVICE_METADATA.localhost.hwsku == ansible_facts.sonic.hwsku
+  when: saved_config_readable.rc == 0
+
+- name: Check the unreadable saved configuration is reported as a warning
+  ansible.builtin.assert:
+    that:
+      - saved_facts is not changed
+      - saved_facts.warnings | default([]) | select('search', 'could not read /etc/sonic/config_db.json') | length == 1
+      - ansible_facts.sonic.hwsku | length > 0
+      - "'saved_config_db' not in ansible_facts.sonic"
+  when: saved_config_readable.rc != 0
+
+- name: Gather everything except the running configuration database
+  community.sonic.sonic_facts:
+    gather_subset:
+      - '!config_db'
+  register: negated_facts
+
+- name: Check the negated subset is excluded
+  ansible.builtin.assert:
+    that:
+      - negated_facts is not changed
+      - ansible_facts.sonic.hwsku | length > 0
+      - "'config_db' not in ansible_facts.sonic"
+      - "('saved_config_db' in ansible_facts.sonic) == (saved_config_readable.rc == 0)"
