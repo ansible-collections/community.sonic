@@ -1,0 +1,272 @@
+---
+# Exercised on `nat`, which is disabled by default on the virtual switch and
+# ships a container image, so enabling it really starts a container. hostcfgd
+# starts and stops the systemd unit asynchronously, so the tests wait for it
+# with a bounded retry. The original values are restored at the end.
+- name: Read the nat feature entry
+  community.sonic.get_entry:
+    table: FEATURE
+    key: nat
+  register: nat_before
+
+- name: Check the nat feature is in its default state
+  ansible.builtin.assert:
+    that:
+      - nat_before.value.state == 'disabled'
+      - nat_before.value.auto_restart in ['enabled', 'disabled']
+    fail_msg: "the nat feature is not in the expected default state: {{ nat_before.value }}"
+
+- name: Remember the original values
+  ansible.builtin.set_fact:
+    nat_auto_restart: "{{ nat_before.value.auto_restart == 'enabled' }}"
+    nat_high_mem_alert: "{{ nat_before.value.high_mem_alert | default('disabled') == 'enabled' }}"
+
+- name: Run the feature tests
+  block:
+    - name: Toggle auto_restart and high_mem_alert in check mode
+      community.sonic.feature:
+        name: nat
+        auto_restart: "{{ not nat_auto_restart }}"
+        high_mem_alert: "{{ not nat_high_mem_alert }}"
+      check_mode: true
+      diff: true
+      register: toggle_check
+
+    - name: Read the nat feature entry after the check mode run
+      community.sonic.get_entry:
+        table: FEATURE
+        key: nat
+      register: nat_after_check
+
+    - name: Check mode predicts the change without writing
+      ansible.builtin.assert:
+        that:
+          - toggle_check is changed
+          - toggle_check.name == 'nat'
+          - toggle_check.state == 'disabled'
+          - toggle_check.diff.before == nat_before.value
+          - toggle_check.diff.after.auto_restart == ('disabled' if nat_auto_restart else 'enabled')
+          - toggle_check.diff.after.high_mem_alert == ('disabled' if nat_high_mem_alert else 'enabled')
+          - nat_after_check.value == nat_before.value
+
+    - name: Toggle auto_restart and high_mem_alert
+      community.sonic.feature:
+        name: nat
+        auto_restart: "{{ not nat_auto_restart }}"
+        high_mem_alert: "{{ not nat_high_mem_alert }}"
+      diff: true
+      register: toggle_result
+
+    - name: Read the nat feature entry after the toggle
+      community.sonic.get_entry:
+        table: FEATURE
+        key: nat
+      register: nat_after_toggle
+
+    - name: Check only the managed fields changed
+      ansible.builtin.assert:
+        that:
+          - toggle_result is changed
+          - toggle_result.diff.after == nat_after_toggle.value
+          - nat_after_toggle.value.state == 'disabled'
+          - nat_after_toggle.value.auto_restart == ('disabled' if nat_auto_restart else 'enabled')
+          - nat_after_toggle.value.high_mem_alert == ('disabled' if nat_high_mem_alert else 'enabled')
+          - >-
+            nat_after_toggle.value | combine({'auto_restart': nat_before.value.auto_restart,
+                                              'high_mem_alert': nat_before.value.high_mem_alert | default('disabled')})
+            == nat_before.value | combine({'high_mem_alert': nat_before.value.high_mem_alert | default('disabled')})
+
+    - name: Query the system for the auto restart setting
+      ansible.builtin.command: show feature autorestart nat
+      changed_when: false
+      register: autorestart_output
+
+    - name: Output from system command
+      ansible.builtin.debug:
+        msg: '{{ autorestart_output.stdout }}'
+
+    - name: Check that the CLI shows the new auto restart setting
+      ansible.builtin.assert:
+        that:
+          - autorestart_output.stdout is search('(?m)^nat\\s+' ~ ('disabled' if nat_auto_restart else 'enabled') ~ '\\s*$')
+
+    - name: Toggle auto_restart and high_mem_alert again
+      community.sonic.feature:
+        name: nat
+        auto_restart: "{{ not nat_auto_restart }}"
+        high_mem_alert: "{{ not nat_high_mem_alert }}"
+      diff: true
+      register: toggle_again
+
+    - name: Check the toggle is idempotent
+      ansible.builtin.assert:
+        that:
+          - toggle_again is not changed
+          - toggle_again.diff.before == toggle_again.diff.after
+
+    - name: Enable the nat feature
+      community.sonic.feature:
+        name: nat
+        enabled: true
+      diff: true
+      register: enable_result
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - enable_result is changed
+          - enable_result.state == 'enabled'
+          - enable_result.diff.before.state == 'disabled'
+          - enable_result.diff.after.state == 'enabled'
+
+    - name: Query the system for the feature status
+      ansible.builtin.command: show feature status nat
+      changed_when: false
+      register: status_output
+
+    - name: Output from system command
+      ansible.builtin.debug:
+        msg: '{{ status_output.stdout }}'
+
+    - name: Check that the CLI shows the feature enabled
+      ansible.builtin.assert:
+        that:
+          - status_output.stdout is search('(?m)^nat\\s+enabled\\b')
+
+    - name: Wait for hostcfgd to start the nat service
+      ansible.builtin.command: systemctl is-active nat
+      changed_when: false
+      failed_when: false
+      register: nat_active
+      retries: 30
+      delay: 3
+      until: nat_active.stdout == 'active'
+
+    - name: Check that the nat service is running
+      ansible.builtin.assert:
+        that:
+          - nat_active.stdout == 'active'
+        fail_msg: "nat service did not start within 90 s: {{ nat_active.stdout }}"
+
+    - name: Enable the nat feature again
+      community.sonic.feature:
+        name: nat
+        enabled: true
+      diff: true
+      register: enable_again
+
+    - name: Enable the nat feature again in check mode
+      community.sonic.feature:
+        name: nat
+        enabled: true
+      check_mode: true
+      diff: true
+      register: enable_again_check
+
+    - name: Check enabling is idempotent
+      ansible.builtin.assert:
+        that:
+          - enable_again is not changed
+          - enable_again.diff.before == enable_again.diff.after
+          - enable_again_check is not changed
+          - enable_again_check.diff.before == enable_again_check.diff.after
+
+    - name: Disable the nat feature
+      community.sonic.feature:
+        name: nat
+        enabled: false
+      diff: true
+      register: disable_result
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - disable_result is changed
+          - disable_result.state == 'disabled'
+          - disable_result.diff.before.state == 'enabled'
+          - disable_result.diff.after.state == 'disabled'
+
+    - name: Wait for hostcfgd to stop the nat service
+      ansible.builtin.command: systemctl is-active nat
+      changed_when: false
+      failed_when: false
+      register: nat_inactive
+      retries: 30
+      delay: 3
+      until: nat_inactive.stdout != 'active'
+
+    - name: Check that the nat service is stopped
+      ansible.builtin.assert:
+        that:
+          - nat_inactive.stdout != 'active'
+        fail_msg: "nat service did not stop within 90 s: {{ nat_inactive.stdout }}"
+
+    - name: Query the system for the feature status
+      ansible.builtin.command: show feature status nat
+      changed_when: false
+      register: status_output
+
+    - name: Check that the CLI shows the feature disabled
+      ansible.builtin.assert:
+        that:
+          - status_output.stdout is search('(?m)^nat\\s+disabled\\b')
+
+    - name: Try to enable a feature that does not exist
+      community.sonic.feature:
+        name: nosuchfeature
+        enabled: true
+      ignore_errors: true
+      register: unknown_result
+
+    - name: Check that an unknown feature fails clearly
+      ansible.builtin.assert:
+        that:
+          - unknown_result is failed
+          - "'feature \"nosuchfeature\" does not exist' in unknown_result.msg"
+
+    - name: Try to disable the always enabled database feature
+      community.sonic.feature:
+        name: database
+        enabled: false
+      ignore_errors: true
+      register: locked_result
+
+    - name: Check that a locked feature fails clearly
+      ansible.builtin.assert:
+        that:
+          - locked_result is failed
+          - "'state=always_enabled' in locked_result.msg"
+
+    - name: Ask for the state the database feature already has
+      community.sonic.feature:
+        name: database
+        enabled: true
+      diff: true
+      register: locked_noop
+
+    - name: Check that a matching locked value is not a change
+      ansible.builtin.assert:
+        that:
+          - locked_noop is not changed
+          - locked_noop.state == 'always_enabled'
+
+  always:
+    - name: Restore the original nat feature settings
+      community.sonic.feature:
+        name: nat
+        enabled: false
+        auto_restart: "{{ nat_auto_restart }}"
+        high_mem_alert: "{{ nat_high_mem_alert }}"
+
+    - name: Read the nat feature entry after the restore
+      community.sonic.get_entry:
+        table: FEATURE
+        key: nat
+      register: nat_restored
+
+    - name: Check that the original values are back
+      ansible.builtin.assert:
+        that:
+          - nat_restored.value.state == 'disabled'
+          - nat_restored.value.auto_restart == nat_before.value.auto_restart
+          - nat_restored.value.high_mem_alert == nat_before.value.high_mem_alert | default('disabled')
