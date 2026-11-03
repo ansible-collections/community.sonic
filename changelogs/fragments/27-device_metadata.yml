@@ -1,0 +1,3 @@
+---
+minor_changes:
+  - device_metadata - new module to manage the switch identity fields in ``DEVICE_METADATA|localhost`` (hostname, timezone, system MAC, device type, BGP ASN, default BGP and PFC watchdog status, buffer model and synchronous mode) by merging into the existing entry; ``hwsku`` and ``platform`` can be asserted but not changed (https://github.com/ansible-collections/community.sonic/issues/27).

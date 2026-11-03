@@ -1,0 +1,191 @@
+---
+# The hostname and timezone are applied asynchronously by hostcfgd, so every
+# check of the running system is retried for a bounded time. Whatever happens,
+# the original hostname and timezone are restored at the end: later targets
+# (get_entry) assert the virtual switch is still called "sonic".
+- name: Read the current device metadata
+  community.sonic.get_entry:
+    table: DEVICE_METADATA
+    key: localhost
+  register: original
+
+- name: Show the original device metadata
+  ansible.builtin.debug:
+    msg: '{{ original.value }}'
+
+- name: Exercise the device_metadata module
+  block:
+    - name: Set a test hostname
+      community.sonic.device_metadata:
+        hostname: ansible-test-switch
+      diff: true
+      register: set_hostname
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - set_hostname is changed
+          - set_hostname.diff.before.hostname == original.value.hostname
+          - set_hostname.diff.after.hostname == 'ansible-test-switch'
+          - set_hostname.entry.hostname == 'ansible-test-switch'
+          - set_hostname.entry.hwsku == original.value.hwsku
+          - set_hostname.entry.platform == original.value.platform
+
+    - name: Wait for hostcfgd to apply the hostname
+      ansible.builtin.command: hostname
+      changed_when: false
+      register: system_hostname
+      retries: 30
+      delay: 2
+      until: system_hostname.stdout == 'ansible-test-switch'
+
+    - name: Read the entry back
+      community.sonic.get_entry:
+        table: DEVICE_METADATA
+        key: localhost
+      register: after_hostname
+
+    - name: Check that only the hostname changed in CONFIG_DB
+      ansible.builtin.assert:
+        that:
+          - after_hostname.value.hostname == 'ansible-test-switch'
+          - after_hostname.value | dict2items | rejectattr('key', 'eq', 'hostname') | sort(attribute='key') | list
+            == original.value | dict2items | rejectattr('key', 'eq', 'hostname') | sort(attribute='key') | list
+
+    - name: Set the same hostname again
+      community.sonic.device_metadata:
+        hostname: ansible-test-switch
+      diff: true
+      register: set_hostname_again
+
+    - name: Check the hostname change is idempotent
+      ansible.builtin.assert:
+        that:
+          - set_hostname_again is not changed
+          - set_hostname_again.diff.before == set_hostname_again.diff.after
+
+    - name: Predict a hostname change in check mode
+      community.sonic.device_metadata:
+        hostname: ansible-check-mode
+      check_mode: true
+      diff: true
+      register: check_mode_hostname
+
+    - name: Read the entry after check mode
+      community.sonic.get_entry:
+        table: DEVICE_METADATA
+        key: localhost
+      register: after_check_mode
+
+    - name: Check that check mode predicted the change without writing it
+      ansible.builtin.assert:
+        that:
+          - check_mode_hostname is changed
+          - check_mode_hostname.diff.after.hostname == 'ansible-check-mode'
+          - after_check_mode.value.hostname == 'ansible-test-switch'
+
+    - name: Set the timezone
+      community.sonic.device_metadata:
+        timezone: Europe/Stockholm
+      diff: true
+      register: set_timezone
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - set_timezone is changed
+          - set_timezone.diff.after.timezone == 'Europe/Stockholm'
+          - set_timezone.entry.hostname == 'ansible-test-switch'
+
+    - name: Wait for hostcfgd to apply the timezone
+      ansible.builtin.command: timedatectl show --property=Timezone --value
+      changed_when: false
+      register: system_timezone
+      retries: 30
+      delay: 2
+      until: system_timezone.stdout == 'Europe/Stockholm'
+
+    - name: Set the same timezone again
+      community.sonic.device_metadata:
+        timezone: Europe/Stockholm
+      register: set_timezone_again
+
+    - name: Check the timezone change is idempotent
+      ansible.builtin.assert:
+        that:
+          - set_timezone_again is not changed
+
+    - name: Reject an unknown timezone
+      community.sonic.device_metadata:
+        timezone: Mars/Olympus
+      register: bad_timezone
+      ignore_errors: true
+
+    - name: Reject a hardware SKU change
+      community.sonic.device_metadata:
+        hwsku: Not-The-Real-SKU
+        hostname: ansible-test-switch
+      register: bad_hwsku
+      ignore_errors: true
+
+    - name: Accept the current hardware SKU and platform
+      community.sonic.device_metadata:
+        hwsku: '{{ original.value.hwsku }}'
+        platform: '{{ original.value.platform }}'
+        hostname: ansible-test-switch
+      register: same_hwsku
+
+    - name: Read the entry after the refused changes
+      community.sonic.get_entry:
+        table: DEVICE_METADATA
+        key: localhost
+      register: after_refusals
+
+    - name: Check that invalid requests fail without writing
+      ansible.builtin.assert:
+        that:
+          - bad_timezone is failed
+          - "'Mars/Olympus' in bad_timezone.msg"
+          - bad_hwsku is failed
+          - "'refusing to change hwsku' in bad_hwsku.msg"
+          - "'issues/30' in bad_hwsku.msg"
+          - same_hwsku is not changed
+          - after_refusals.value.hwsku == original.value.hwsku
+          - after_refusals.value.timezone == 'Europe/Stockholm'
+
+  always:
+    - name: Restore the original hostname and timezone
+      community.sonic.device_metadata:
+        hostname: '{{ original.value.hostname }}'
+        # The module cannot remove a field; fall back to UTC when the image had no timezone.
+        timezone: '{{ original.value.timezone | default("UTC") }}'
+      register: restore
+
+    - name: Wait for hostcfgd to restore the hostname
+      ansible.builtin.command: hostname
+      changed_when: false
+      register: restored_hostname
+      retries: 30
+      delay: 2
+      until: restored_hostname.stdout == original.value.hostname
+
+    - name: Wait for hostcfgd to restore the timezone
+      ansible.builtin.command: timedatectl show --property=Timezone --value
+      changed_when: false
+      register: restored_timezone
+      retries: 30
+      delay: 2
+      until: restored_timezone.stdout == original.value.timezone | default('UTC')
+
+    - name: Read the restored entry
+      community.sonic.get_entry:
+        table: DEVICE_METADATA
+        key: localhost
+      register: restored_entry
+
+    - name: Check that the original hostname is back
+      ansible.builtin.assert:
+        that:
+          - restored_entry.value.hostname == original.value.hostname
+          - restored_entry.value.hwsku == original.value.hwsku
+          - restored_entry.value.platform == original.value.platform
