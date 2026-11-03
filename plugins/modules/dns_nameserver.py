@@ -21,8 +21,9 @@ description:
     list with O(servers), optionally making it the complete list with O(exclusive).
   - SONiC allows at most three nameservers; the module fails before writing
     anything when the resulting list would be longer.
-  - CONFIG_DB keys are unordered and SONiC writes the resolver configuration
-    in its own order, so the order of O(servers) is not preserved on the device.
+  - CONFIG_DB keys are unordered and SONiC writes the nameservers to
+    C(/etc/resolv.conf) in sorted order, so the order of O(servers) is not
+    preserved on the device.
   - Static nameservers are only supported from SONiC 202305 on. The module fails
     on older releases, which have no C(sonic-system-dns) YANG model, instead of
     silently writing a table that nothing reads.
