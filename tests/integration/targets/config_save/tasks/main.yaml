@@ -1,0 +1,210 @@
+---
+# config_save writes /etc/sonic/config_db.json, which needs root. The
+# integration inventory connects as admin, who has passwordless sudo on SONiC,
+# so the saving tasks run with become. Everything created here is removed in
+# the always block and the saved file is left equal to the running config.
+- name: Test config_save
+  block:
+    - name: Save the running configuration so the file matches before the test
+      community.sonic.config_save:
+      become: true
+      register: baseline
+
+    - name: Check the baseline result
+      ansible.builtin.assert:
+        that:
+          - baseline.path == '/etc/sonic/config_db.json'
+          - baseline.changed_tables is sequence
+          - "'backup_file' not in baseline or baseline is changed"
+
+    - name: Saving again is idempotent
+      community.sonic.config_save:
+      become: true
+      register: baseline_again
+
+    - name: Check that nothing changed
+      ansible.builtin.assert:
+        that:
+          - baseline_again is not changed
+          - baseline_again.changed_tables == []
+          - baseline_again.diff.before == baseline_again.diff.after
+
+    - name: Add a VLAN to the running configuration
+      community.sonic.vlan:
+        vlanid: 3999
+      register: add_vlan
+
+    - name: Check that the VLAN was added
+      ansible.builtin.assert:
+        that:
+          - add_vlan is changed
+
+    - name: Compare the running configuration with the file in check mode
+      community.sonic.config_save:
+        backup: true
+      check_mode: true
+      diff: true
+      register: check_result
+
+    - name: Output from check mode
+      ansible.builtin.debug:
+        msg: '{{ check_result }}'
+
+    - name: Check mode reports the pending change without writing anything
+      ansible.builtin.assert:
+        that:
+          - check_result is changed
+          - "'VLAN' in check_result.changed_tables"
+          - "'Vlan3999' in check_result.diff.after.VLAN"
+          - "'Vlan3999' not in (check_result.diff.before.VLAN | default({}))"
+          - "'backup_file' not in check_result"
+
+    - name: Saving without root privileges fails with a helpful message
+      community.sonic.config_save:
+      register: no_root
+      ignore_errors: true
+
+    - name: Check the failure message
+      ansible.builtin.assert:
+        that:
+          - no_root is failed
+          - "'become: true' in no_root.msg"
+
+    - name: Persist the running configuration with a backup
+      community.sonic.config_save:
+        backup: true
+      become: true
+      diff: true
+      register: save_vlan
+
+    - name: Output from config_save
+      ansible.builtin.debug:
+        msg: '{{ save_vlan }}'
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - save_vlan is changed
+          - save_vlan.path == '/etc/sonic/config_db.json'
+          - "'VLAN' in save_vlan.changed_tables"
+          - "'Vlan3999' in save_vlan.diff.after.VLAN"
+          - save_vlan.backup_file is defined
+          - save_vlan.backup_file is match('/etc/sonic/config_db[.]json[.]')
+
+    - name: Persist the running configuration again
+      community.sonic.config_save:
+        backup: true
+      become: true
+      register: save_vlan_again
+
+    - name: Check that saving is idempotent
+      ansible.builtin.assert:
+        that:
+          - save_vlan_again is not changed
+          - save_vlan_again.changed_tables == []
+          - save_vlan_again.diff.before == save_vlan_again.diff.after
+          - "'backup_file' not in save_vlan_again"
+
+    - name: Read the saved file
+      ansible.builtin.slurp:
+        src: /etc/sonic/config_db.json
+      become: true
+      register: saved_file
+
+    - name: Read the backup file
+      ansible.builtin.slurp:
+        src: '{{ save_vlan.backup_file }}'
+      become: true
+      register: backup_file
+
+    - name: Check that the VLAN is in the saved file but not in the backup
+      vars:
+        saved_config: '{{ saved_file.content | b64decode | from_json }}'
+        backup_config: '{{ backup_file.content | b64decode | from_json }}'
+      ansible.builtin.assert:
+        that:
+          - "'Vlan3999' in saved_config.VLAN"
+          - "'Vlan3999' not in (backup_config.VLAN | default({}))"
+
+    - name: Remove the VLAN from the running configuration
+      community.sonic.vlan:
+        vlanid: 3999
+        state: absent
+      register: remove_vlan
+
+    - name: Check that the VLAN was removed
+      ansible.builtin.assert:
+        that:
+          - remove_vlan is changed
+
+    - name: Check mode sees the removal as a pending change
+      community.sonic.config_save:
+      check_mode: true
+      register: check_removal
+
+    - name: Read the saved file after check mode
+      ansible.builtin.slurp:
+        src: /etc/sonic/config_db.json
+      become: true
+      register: saved_file_after_check
+
+    - name: Check mode did not touch the file
+      vars:
+        saved_config: '{{ saved_file_after_check.content | b64decode | from_json }}'
+      ansible.builtin.assert:
+        that:
+          - check_removal is changed
+          - "'VLAN' in check_removal.changed_tables"
+          - "'Vlan3999' in saved_config.VLAN"
+
+    - name: Persist the removal and return the saved configuration
+      community.sonic.config_save:
+        return_config: true
+      become: true
+      register: save_removal
+
+    - name: Read the saved file after the removal
+      ansible.builtin.slurp:
+        src: /etc/sonic/config_db.json
+      become: true
+      register: saved_file_after_removal
+
+    - name: Check that the VLAN is gone from the file and the returned config
+      vars:
+        saved_config: '{{ saved_file_after_removal.content | b64decode | from_json }}'
+      ansible.builtin.assert:
+        that:
+          - save_removal is changed
+          - "'VLAN' in save_removal.changed_tables"
+          - "'Vlan3999' not in (saved_config.VLAN | default({}))"
+          - "'Vlan3999' not in (save_removal.config.VLAN | default({}))"
+          - save_removal.config.DEVICE_METADATA.localhost.hwsku is defined
+          - save_removal.config.DEVICE_METADATA == saved_config.DEVICE_METADATA
+
+    - name: Persist once more
+      community.sonic.config_save:
+      become: true
+      register: final_save
+
+    - name: Check that the saved file equals the running configuration
+      ansible.builtin.assert:
+        that:
+          - final_save is not changed
+          - final_save.changed_tables == []
+
+  always:
+    - name: Remove the test VLAN
+      community.sonic.vlan:
+        vlanid: 3999
+        state: absent
+
+    - name: Leave the saved file equal to the running configuration
+      community.sonic.config_save:
+      become: true
+
+    - name: Remove the backup file
+      ansible.builtin.file:
+        path: '{{ save_vlan.backup_file }}'
+        state: absent
+      become: true
+      when: save_vlan.backup_file is defined
