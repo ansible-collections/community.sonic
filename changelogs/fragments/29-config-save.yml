@@ -1,0 +1,2 @@
+minor_changes:
+  - config_save - new module that persists the running CONFIG_DB to ``/etc/sonic/config_db.json`` with ``config save -y``, reporting ``changed`` only when the file differs from the running configuration, with check mode, a table-level diff, an optional timestamped backup and ``return_config`` to read the startup configuration (https://github.com/ansible-collections/community.sonic/issues/29).

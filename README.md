@@ -133,8 +133,10 @@ when using `ansible-core 2.19`. Use SSH with the system Python interpreter that
 has those bindings installed; these modules do not use `network_cli` or an
 HTTP API. The Ansible user needs permission to access SONiC's configuration DB.
 
-The modules update the running configuration database. Persist changes with
-SONiC's configuration save procedure if they must survive a reboot.
+The modules update the running configuration database. Changes must be
+persisted to survive a reboot: run `community.sonic.config_save` (with
+`become: true`) at the end of the play or as a handler. It only writes
+`/etc/sonic/config_db.json` when the running configuration differs from it.
 
 ## Tested with SONiC
 
