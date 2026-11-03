@@ -1,7 +1,9 @@
 ---
 # The facts module never writes anything, so there is nothing to restore.
 # The virtual switch has hostname "sonic"; the other values are compared
-# against the SONiC CLI rather than hardcoded.
+# against the SONiC CLI rather than hardcoded. Only the module's own warnings
+# ("could not read ...") are counted, because Ansible itself may add the
+# interpreter discovery warning to the first task that runs on the host.
 - name: Gather the basic SONiC facts
   community.sonic.sonic_facts:
   register: min_facts
@@ -14,7 +16,7 @@
   ansible.builtin.assert:
     that:
       - min_facts is not changed
-      - min_facts.warnings | default([]) | length == 0
+      - min_facts.warnings | default([]) | select('search', 'could not') | length == 0
       - ansible_facts.sonic.platform | length > 0
       - ansible_facts.sonic.hwsku | length > 0
       - ansible_facts.sonic.asic_type | length > 0
@@ -75,7 +77,7 @@
   ansible.builtin.assert:
     that:
       - config_db_facts is not changed
-      - config_db_facts.warnings | default([]) | length == 0
+      - config_db_facts.warnings | default([]) | select('search', 'could not') | length == 0
       - ansible_facts.sonic.hwsku | length > 0
       - "'PORT' in ansible_facts.sonic.config_db"
       - ansible_facts.sonic.config_db.PORT | length > 0
@@ -127,7 +129,7 @@
   ansible.builtin.assert:
     that:
       - saved_facts is not changed
-      - saved_facts.warnings | default([]) | length == 0
+      - saved_facts.warnings | default([]) | select('search', 'could not') | length == 0
       - ansible_facts.sonic.hwsku | length > 0
       - "'config_db' not in ansible_facts.sonic"
       - "'DEVICE_METADATA' in ansible_facts.sonic.saved_config_db"
