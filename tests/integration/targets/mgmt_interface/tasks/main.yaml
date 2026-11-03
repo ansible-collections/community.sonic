@@ -1,0 +1,151 @@
+---
+# eth0 is the only way into the virtual switch (QEMU user networking with a
+# DHCP address and a host port forward). SONiC's hostcfgd restarts
+# interfaces-config as soon as MGMT_INTERFACE changes, which replaces the DHCP
+# address with the static ones from CONFIG_DB, so writing any address here for
+# real would cut the connection. The address path therefore runs in check mode
+# and through a no-op removal; the real write path is exercised with a
+# MGMT_PORT description, which nothing applies live.
+
+- name: Record the management interface table
+  community.sonic.get_entry:
+    table: MGMT_INTERFACE
+  register: mgmt_interface_before
+
+- name: Record the management port entry
+  community.sonic.get_entry:
+    table: MGMT_PORT
+    key: eth0
+  register: mgmt_port_before
+
+- name: Show the current management configuration
+  ansible.builtin.debug:
+    msg:
+      - '{{ mgmt_interface_before.value }}'
+      - '{{ mgmt_port_before.value }}'
+
+- name: Add a management address in check mode
+  community.sonic.mgmt_interface:
+    address: 2001:db8:1:0::2/64
+    gateway: 2001:db8:1::1
+  check_mode: true
+  diff: true
+  register: add_address_check
+
+- name: Check the module predicts the new entry
+  ansible.builtin.assert:
+    that:
+      - add_address_check is changed
+      - add_address_check.interface == 'eth0'
+      - add_address_check.address == '2001:db8:1::2/64'
+      - "add_address_check.diff.before == {'MGMT_INTERFACE|eth0|2001:db8:1::2/64': {}}"
+      - "add_address_check.diff.after == {'MGMT_INTERFACE|eth0|2001:db8:1::2/64': {'gwaddr': '2001:db8:1::1'}}"
+
+- name: Read the management interface table again
+  community.sonic.get_entry:
+    table: MGMT_INTERFACE
+  register: mgmt_interface_after_check
+
+- name: Check that check mode did not write anything
+  ansible.builtin.assert:
+    that:
+      - mgmt_interface_after_check.value == mgmt_interface_before.value
+
+- name: Remove the address that was never added
+  community.sonic.mgmt_interface:
+    address: 2001:db8:1::2/64
+    state: absent
+  register: remove_missing_address
+
+- name: Check that removing a missing address is a no-op
+  ansible.builtin.assert:
+    that:
+      - remove_missing_address is not changed
+      - remove_missing_address.diff.before == remove_missing_address.diff.after
+
+- name: Reject an address without a prefix length
+  community.sonic.mgmt_interface:
+    address: 192.0.2.10
+  register: bad_address
+  ignore_errors: true
+
+- name: Check the failure message
+  ansible.builtin.assert:
+    that:
+      - bad_address is failed
+      - "'prefix length' in bad_address.msg"
+
+- name: Set the management port description
+  community.sonic.mgmt_interface:
+    description: community.sonic integration test
+  diff: true
+  register: set_description
+
+- name: Check the module returns what we expect
+  ansible.builtin.assert:
+    that:
+      - set_description is changed
+      - set_description.interface == 'eth0'
+      - "'address' not in set_description"
+      - set_description.diff.before['MGMT_PORT|eth0'] == mgmt_port_before.value
+      - set_description.diff.after['MGMT_PORT|eth0'].description == 'community.sonic integration test'
+
+- name: Read the management port entry
+  community.sonic.get_entry:
+    table: MGMT_PORT
+    key: eth0
+  register: mgmt_port_after
+
+- name: Check that the description was written and other fields kept
+  ansible.builtin.assert:
+    that:
+      - mgmt_port_after.value.description == 'community.sonic integration test'
+      - mgmt_port_after.value | dict2items | rejectattr('key', 'eq', 'description') | items2dict
+        == mgmt_port_before.value | dict2items | rejectattr('key', 'eq', 'description') | items2dict
+
+- name: Set the same description again
+  community.sonic.mgmt_interface:
+    description: community.sonic integration test
+  register: set_description_again
+
+- name: Check the description is idempotent
+  ansible.builtin.assert:
+    that:
+      - set_description_again is not changed
+      - set_description_again.diff.before == set_description_again.diff.after
+
+- name: Restore the original description in check mode
+  community.sonic.mgmt_interface:
+    description: "{{ mgmt_port_before.value.description | default('') }}"
+  check_mode: true
+  register: restore_description_check
+
+- name: Read the management port entry after check mode
+  community.sonic.get_entry:
+    table: MGMT_PORT
+    key: eth0
+  register: mgmt_port_after_check
+
+- name: Check that check mode predicted the restore without writing
+  ansible.builtin.assert:
+    that:
+      - restore_description_check is changed
+      - restore_description_check.diff.after['MGMT_PORT|eth0'] == mgmt_port_before.value
+      - mgmt_port_after_check.value == mgmt_port_after.value
+
+- name: Restore the original description
+  community.sonic.mgmt_interface:
+    description: "{{ mgmt_port_before.value.description | default('') }}"
+  register: restore_description
+
+- name: Read the management port entry after the restore
+  community.sonic.get_entry:
+    table: MGMT_PORT
+    key: eth0
+  register: mgmt_port_restored
+
+- name: Check that the management port entry is back to the original
+  ansible.builtin.assert:
+    that:
+      - restore_description is changed
+      - mgmt_port_restored.value == mgmt_port_before.value

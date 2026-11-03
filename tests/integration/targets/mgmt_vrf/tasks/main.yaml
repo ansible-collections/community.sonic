@@ -1,0 +1,70 @@
+---
+# Toggling the management VRF makes hostcfgd restart interfaces-config and
+# move eth0 into or out of the mgmt VRF, which drops the SSH session to the
+# virtual switch. The state change is therefore only exercised in check mode;
+# the real run re-applies the current state and must report no change.
+
+- name: Record the management VRF configuration
+  community.sonic.get_entry:
+    table: MGMT_VRF_CONFIG
+    key: vrf_global
+  register: mgmt_vrf_before
+
+- name: Work out the current state
+  ansible.builtin.set_fact:
+    mgmt_vrf_enabled: "{{ mgmt_vrf_before.value.mgmtVrfEnabled | default('false') | bool }}"
+
+- name: Show the current management VRF configuration
+  ansible.builtin.debug:
+    msg: 'MGMT_VRF_CONFIG|vrf_global = {{ mgmt_vrf_before.value }} (enabled: {{ mgmt_vrf_enabled }})'
+
+- name: Toggle the management VRF in check mode
+  community.sonic.mgmt_vrf:
+    enabled: "{{ not mgmt_vrf_enabled | bool }}"
+  check_mode: true
+  diff: true
+  register: toggle_check
+
+- name: Check the module predicts the change
+  ansible.builtin.assert:
+    that:
+      - toggle_check is changed
+      - toggle_check.enabled == (not mgmt_vrf_enabled | bool)
+      - toggle_check.diff.before == mgmt_vrf_before.value
+      - toggle_check.diff.after.mgmtVrfEnabled == ('false' if mgmt_vrf_enabled | bool else 'true')
+
+- name: Read the management VRF configuration again
+  community.sonic.get_entry:
+    table: MGMT_VRF_CONFIG
+    key: vrf_global
+  register: mgmt_vrf_after_check
+
+- name: Check that check mode did not write anything
+  ansible.builtin.assert:
+    that:
+      - mgmt_vrf_after_check.value == mgmt_vrf_before.value
+
+- name: Re-apply the current management VRF state
+  community.sonic.mgmt_vrf:
+    enabled: "{{ mgmt_vrf_enabled | bool }}"
+  diff: true
+  register: reapply
+
+- name: Check that re-applying the current state is a no-op
+  ansible.builtin.assert:
+    that:
+      - reapply is not changed
+      - reapply.enabled == mgmt_vrf_enabled | bool
+      - reapply.diff.before == mgmt_vrf_before.value
+      - reapply.diff.after == mgmt_vrf_before.value
+
+- name: Read the management VRF configuration after the real run
+  community.sonic.get_entry:
+    table: MGMT_VRF_CONFIG
+    key: vrf_global
+  register: mgmt_vrf_after
+
+- name: Check that nothing changed
+  ansible.builtin.assert:
+    that:
+      - mgmt_vrf_after.value == mgmt_vrf_before.value
