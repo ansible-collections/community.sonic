@@ -1,0 +1,498 @@
+---
+# Exercises ntp, ntp_server and ntp_key on the virtual switch. hostcfgd
+# restarts chrony on every change to the NTP, NTP_SERVER and NTP_KEY tables
+# and chrony regenerates /etc/chrony/chrony.conf and chrony.keys on the way
+# up, so the tests wait for that with a bounded retry. The documentation
+# addresses used as servers are never reached; time synchronisation is not
+# expected to succeed. eth0 keeps its DHCP address, it only becomes the NTP
+# source interface. The original tables are restored at the end, even on
+# failure.
+
+- name: Record the existing NTP global entry
+  community.sonic.get_entry:
+    table: NTP
+    key: global
+  register: ntp_original
+
+- name: Record the existing NTP_SERVER table
+  community.sonic.get_entry:
+    table: NTP_SERVER
+  register: ntp_server_original
+
+- name: Record the existing NTP_KEY table
+  community.sonic.get_entry:
+    table: NTP_KEY
+  register: ntp_key_original
+
+- name: Output the original NTP configuration
+  ansible.builtin.debug:
+    msg:
+      - '{{ ntp_original.value }}'
+      - '{{ ntp_server_original.value }}'
+      - '{{ ntp_key_original.value | list }}'
+
+- name: Check the switch has the default global NTP settings
+  ansible.builtin.assert:
+    that:
+      - ntp_original.value.dhcp == 'enabled'
+      - ntp_original.value.vrf | default('default') == 'default'
+      - "'42' not in ntp_key_original.value"
+    fail_msg: "the NTP tables are not in the expected default state: {{ ntp_original.value }}"
+
+- name: Run the NTP tests
+  block:
+    # -- ntp (global settings) -------------------------------------------------
+
+    - name: Disable DHCP servers and set the source interface in check mode
+      community.sonic.ntp:
+        dhcp: false
+        source_interface: eth0
+      check_mode: true
+      diff: true
+      register: ntp_check
+
+    - name: Read the NTP global entry after the check mode run
+      community.sonic.get_entry:
+        table: NTP
+        key: global
+      register: ntp_after_check
+
+    - name: Check mode predicts the change without writing
+      ansible.builtin.assert:
+        that:
+          - ntp_check is changed
+          - ntp_check.source_interface == 'eth0'
+          - ntp_check.diff.before == ntp_original.value
+          - ntp_check.diff.after.dhcp == 'disabled'
+          - ntp_check.diff.after.src_intf == 'eth0'
+          - ntp_after_check.value == ntp_original.value
+
+    - name: Disable DHCP servers and set the source interface
+      community.sonic.ntp:
+        dhcp: false
+        source_interface: eth0
+      diff: true
+      register: ntp_set
+
+    - name: Read the NTP global entry
+      community.sonic.get_entry:
+        table: NTP
+        key: global
+      register: ntp_after_set
+
+    - name: Check only the managed fields changed
+      ansible.builtin.assert:
+        that:
+          - ntp_set is changed
+          - ntp_set.diff.after == ntp_after_set.value
+          - ntp_after_set.value.dhcp == 'disabled'
+          - ntp_after_set.value.src_intf == 'eth0'
+          - "ntp_after_set.value | combine({'dhcp': 'enabled', 'src_intf': ntp_original.value.src_intf | default('eth0')}) == ntp_original.value"
+
+    - name: Disable DHCP servers and set the source interface again
+      community.sonic.ntp:
+        dhcp: false
+        source_interface: eth0
+      diff: true
+      register: ntp_again
+
+    - name: Check the global settings are idempotent
+      ansible.builtin.assert:
+        that:
+          - ntp_again is not changed
+          - ntp_again.diff.before == ntp_again.diff.after
+
+    - name: Move NTP to the management VRF in check mode
+      community.sonic.ntp:
+        vrf: mgmt
+      check_mode: true
+      diff: true
+      register: ntp_vrf_check
+
+    - name: Read the NTP global entry after the VRF check mode run
+      community.sonic.get_entry:
+        table: NTP
+        key: global
+      register: ntp_after_vrf_check
+
+    - name: Check the VRF change is predicted but not written
+      ansible.builtin.assert:
+        that:
+          - ntp_vrf_check is changed
+          - ntp_vrf_check.diff.after.vrf == 'mgmt'
+          - ntp_after_vrf_check.value == ntp_after_set.value
+
+    - name: Reject an unknown source interface
+      community.sonic.ntp:
+        source_interface: Ethernet999
+      register: ntp_bad_intf
+      failed_when: ntp_bad_intf is not failed or 'could not find interface' not in ntp_bad_intf.msg
+
+    # -- ntp_server --------------------------------------------------------------
+
+    - name: Add an IPv6 server in check mode
+      community.sonic.ntp_server:
+        address: 2001:db8::123
+        iburst: true
+      check_mode: true
+      diff: true
+      register: ntp_server_check
+
+    - name: Read the NTP_SERVER table after the check mode run
+      community.sonic.get_entry:
+        table: NTP_SERVER
+      register: ntp_server_after_check
+
+    - name: Check mode predicts the server without writing
+      ansible.builtin.assert:
+        that:
+          - ntp_server_check is changed
+          - "'2001:db8::123' in ntp_server_check.servers"
+          - ntp_server_check.diff.after['2001:db8::123'].iburst == 'on'
+          - "'2001:db8::123' not in ntp_server_after_check.value"
+
+    - name: Add an IPv6 server
+      community.sonic.ntp_server:
+        address: 2001:db8::123
+        iburst: true
+      diff: true
+      register: ntp_server_v6
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - ntp_server_v6 is changed
+          - "'2001:db8::123' in ntp_server_v6.servers"
+          - ntp_server_v6.diff.after['2001:db8::123'].iburst == 'on'
+
+    - name: Add the IPv6 server again
+      community.sonic.ntp_server:
+        address: 2001:db8::123
+        iburst: true
+      diff: true
+      register: ntp_server_v6_again
+
+    - name: Check adding a server is idempotent
+      ansible.builtin.assert:
+        that:
+          - ntp_server_v6_again is not changed
+          - ntp_server_v6_again.diff.before == ntp_server_v6_again.diff.after
+
+    - name: Add an IPv4 server through the list form
+      community.sonic.ntp_server:
+        servers:
+          - 2001:db8::123
+          - 192.0.2.123
+        iburst: true
+      diff: true
+      register: ntp_server_list
+
+    - name: Check only the missing server was added
+      ansible.builtin.assert:
+        that:
+          - ntp_server_list is changed
+          - "'2001:db8::123' in ntp_server_list.diff.before"
+          - "'192.0.2.123' not in ntp_server_list.diff.before"
+          - "'192.0.2.123' in ntp_server_list.diff.after"
+          - "'192.0.2.123' in ntp_server_list.servers"
+
+    - name: Read the NTP_SERVER table
+      community.sonic.get_entry:
+        table: NTP_SERVER
+      register: ntp_server_table
+
+    - name: Output the NTP_SERVER table
+      ansible.builtin.debug:
+        msg: '{{ ntp_server_table.value }}'
+
+    - name: Check both servers are stored with iburst on
+      ansible.builtin.assert:
+        that:
+          - ntp_server_table.value['2001:db8::123'].iburst == 'on'
+          - ntp_server_table.value['192.0.2.123'].iburst == 'on'
+
+    - name: Wait for hostcfgd and chrony to regenerate chrony.conf
+      ansible.builtin.command: cat /etc/chrony/chrony.conf
+      become: true
+      changed_when: false
+      register: chrony_conf
+      until: >-
+        chrony_conf.stdout is search('(?m)^server 2001:db8::123 iburst')
+        and chrony_conf.stdout is search('(?m)^server 192[.]0[.]2[.]123 iburst')
+      retries: 12
+      delay: 5
+      failed_when: false
+
+    - name: Output the server lines of chrony.conf
+      ansible.builtin.debug:
+        msg: "{{ chrony_conf.stdout_lines | default([chrony_conf.msg]) | select('match', '^(server|pool) ') | list }}"
+
+    - name: Check chrony picked up both servers
+      ansible.builtin.assert:
+        that:
+          - chrony_conf.stdout is search('(?m)^server 2001:db8::123 iburst')
+          - chrony_conf.stdout is search('(?m)^server 192[.]0[.]2[.]123 iburst')
+
+    - name: Wait for the servers to show up in the CLI
+      ansible.builtin.command: show ntp
+      changed_when: false
+      register: ntp_show
+      until: >-
+        ntp_show.stdout is search('2001:db8::123')
+        and ntp_show.stdout is search('192[.]0[.]2[.]123')
+      retries: 12
+      delay: 5
+      failed_when: false
+
+    - name: Output from the CLI
+      ansible.builtin.debug:
+        msg: '{{ ntp_show.stdout_lines | default([ntp_show.msg]) }}'
+
+    - name: Check the CLI lists both servers
+      ansible.builtin.assert:
+        that:
+          - ntp_show.stdout is search('2001:db8::123')
+          - ntp_show.stdout is search('192[.]0[.]2[.]123')
+
+    - name: Keep only the IPv4 server with an exclusive list
+      community.sonic.ntp_server:
+        servers:
+          - 192.0.2.123
+        iburst: true
+        exclusive: true
+      diff: true
+      register: ntp_server_exclusive
+
+    - name: Check the IPv6 server was removed
+      ansible.builtin.assert:
+        that:
+          - ntp_server_exclusive is changed
+          - "'2001:db8::123' in ntp_server_exclusive.diff.before"
+          - "'2001:db8::123' not in ntp_server_exclusive.diff.after"
+          - ntp_server_exclusive.servers == ['192.0.2.123']
+
+    - name: Apply the exclusive list again
+      community.sonic.ntp_server:
+        servers:
+          - 192.0.2.123
+        iburst: true
+        exclusive: true
+      diff: true
+      register: ntp_server_exclusive_again
+
+    - name: Check the exclusive list is idempotent
+      ansible.builtin.assert:
+        that:
+          - ntp_server_exclusive_again is not changed
+
+    - name: Disable the IPv4 server, keeping its other settings
+      community.sonic.ntp_server:
+        address: 192.0.2.123
+        enabled: false
+      diff: true
+      register: ntp_server_disable
+
+    - name: Read the IPv4 server entry
+      community.sonic.get_entry:
+        table: NTP_SERVER
+        key: 192.0.2.123
+      register: ntp_server_v4_entry
+
+    - name: Check only admin_state was written
+      ansible.builtin.assert:
+        that:
+          - ntp_server_disable is changed
+          - "ntp_server_v4_entry.value == {'iburst': 'on', 'admin_state': 'disabled'}"
+
+    - name: Reject an invalid address
+      community.sonic.ntp_server:
+        address: not an address
+      register: ntp_server_invalid
+      failed_when: ntp_server_invalid is not failed or 'not a valid IPv4 or IPv6 address or host name' not in ntp_server_invalid.msg
+
+    # -- ntp_key -----------------------------------------------------------------
+
+    - name: Add a trusted key
+      community.sonic.ntp_key:
+        id: 42
+        type: sha256
+        value: HEX:5c7a3f
+        trusted: true
+      diff: true
+      register: ntp_key_add
+
+    - name: Read the key entry
+      community.sonic.get_entry:
+        table: NTP_KEY
+        key: '42'
+      register: ntp_key_entry
+
+    - name: Check the key is stored base64 encoded and the diff hides it
+      ansible.builtin.assert:
+        that:
+          - ntp_key_add is changed
+          - ntp_key_add.id == 42
+          - ntp_key_add.diff.after.value == 'VALUE_SPECIFIED_IN_NO_LOG_PARAMETER'
+          - "'SEVYOjVjN2EzZg==' not in ntp_key_add | to_json"
+          - "ntp_key_entry.value == {'type': 'sha256', 'value': 'SEVYOjVjN2EzZg==', 'trusted': 'yes'}"
+
+    - name: Add the key again
+      community.sonic.ntp_key:
+        id: 42
+        type: sha256
+        value: HEX:5c7a3f
+        trusted: true
+      diff: true
+      register: ntp_key_again
+
+    - name: Check adding a key is idempotent
+      ansible.builtin.assert:
+        that:
+          - ntp_key_again is not changed
+          - ntp_key_again.diff.before == ntp_key_again.diff.after
+
+    - name: Wait for chrony to regenerate chrony.keys
+      ansible.builtin.command: cat /etc/chrony/chrony.keys
+      become: true
+      changed_when: false
+      register: chrony_keys
+      until: chrony_keys.stdout is search('(?m)^42 SHA256 HEX:5c7a3f')
+      retries: 12
+      delay: 5
+      failed_when: false
+
+    - name: Check chrony decoded the key
+      ansible.builtin.assert:
+        that:
+          - chrony_keys.stdout is search('(?m)^42 SHA256 HEX:5c7a3f')
+        fail_msg: "key 42 did not show up in /etc/chrony/chrony.keys: {{ chrony_keys.stdout | default(chrony_keys.msg) }}"
+
+    - name: Stop trusting the key without re-supplying the value
+      community.sonic.ntp_key:
+        id: 42
+        trusted: false
+      diff: true
+      register: ntp_key_untrust
+
+    - name: Read the key entry again
+      community.sonic.get_entry:
+        table: NTP_KEY
+        key: '42'
+      register: ntp_key_entry_untrusted
+
+    - name: Check only trusted changed
+      ansible.builtin.assert:
+        that:
+          - ntp_key_untrust is changed
+          - "ntp_key_entry_untrusted.value == {'type': 'sha256', 'value': 'SEVYOjVjN2EzZg==', 'trusted': 'no'}"
+
+    - name: Reject creating a key without a value
+      community.sonic.ntp_key:
+        id: 43
+        trusted: true
+      register: ntp_key_no_value
+      failed_when: ntp_key_no_value is not failed or 'value is required' not in ntp_key_no_value.msg
+
+    - name: Remove the key
+      community.sonic.ntp_key:
+        id: 42
+        state: absent
+      diff: true
+      register: ntp_key_remove
+
+    - name: Remove the key again
+      community.sonic.ntp_key:
+        id: 42
+        state: absent
+      register: ntp_key_remove_again
+
+    - name: Confirm the key is gone
+      community.sonic.get_entry:
+        table: NTP_KEY
+      register: ntp_key_after_remove
+      failed_when: >-
+        ntp_key_remove is not changed or ntp_key_remove_again is changed
+        or '42' in ntp_key_after_remove.value
+
+    # -- ntp_server removal --------------------------------------------------------
+
+    - name: Remove the IPv4 server in check mode
+      community.sonic.ntp_server:
+        address: 192.0.2.123
+        state: absent
+      check_mode: true
+      register: ntp_server_remove_check
+
+    - name: Confirm check mode predicted the removal without applying it
+      community.sonic.get_entry:
+        table: NTP_SERVER
+      register: ntp_server_before_remove
+      failed_when: ntp_server_remove_check is not changed or '192.0.2.123' not in ntp_server_before_remove.value
+
+    - name: Remove the IPv4 server
+      community.sonic.ntp_server:
+        address: 192.0.2.123
+        state: absent
+      diff: true
+      register: ntp_server_remove
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - ntp_server_remove is changed
+          - "'192.0.2.123' not in ntp_server_remove.diff.after"
+          - "'192.0.2.123' not in ntp_server_remove.servers"
+
+    - name: Remove the IPv4 server again
+      community.sonic.ntp_server:
+        address: 192.0.2.123
+        state: absent
+      register: ntp_server_remove_again
+
+    - name: Check removal is idempotent
+      ansible.builtin.assert:
+        that:
+          - ntp_server_remove_again is not changed
+
+    - name: Confirm the server is gone from CONFIG_DB
+      community.sonic.get_entry:
+        table: NTP_SERVER
+      register: ntp_server_after_remove
+      failed_when: "'192.0.2.123' in ntp_server_after_remove.value"
+
+  always:
+    - name: Restore the original global NTP settings
+      community.sonic.ntp:
+        enabled: "{{ ntp_original.value.admin_state | default('enabled') == 'enabled' }}"
+        authentication: "{{ ntp_original.value.authentication | default('disabled') == 'enabled' }}"
+        dhcp: "{{ ntp_original.value.dhcp | default('enabled') == 'enabled' }}"
+        server_role: "{{ ntp_original.value.server_role | default('disabled') == 'enabled' }}"
+        source_interface: "{{ ntp_original.value.src_intf | default('') }}"
+        vrf: "{{ ntp_original.value.vrf | default('default') }}"
+
+    - name: Restore the original NTP_SERVER table
+      community.sonic.ntp_server:
+        servers: '{{ ntp_server_original.value | list }}'
+        exclusive: true
+
+    - name: Remove the test key
+      community.sonic.ntp_key:
+        id: 42
+        state: absent
+
+    - name: Read the restored NTP tables
+      community.sonic.get_entry:
+        table: '{{ item }}'
+      loop:
+        - NTP
+        - NTP_SERVER
+        - NTP_KEY
+      register: ntp_restored
+
+    - name: Check the original NTP configuration is back
+      ansible.builtin.assert:
+        that:
+          - ntp_restored.results[0].value.global == ntp_original.value
+          - ntp_restored.results[1].value == ntp_server_original.value
+          - ntp_restored.results[2].value == ntp_key_original.value
+        fail_msg: "the NTP tables were not restored: {{ ntp_restored.results | map(attribute='value') | list }}"
