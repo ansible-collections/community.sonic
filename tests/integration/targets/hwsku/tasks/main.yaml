@@ -234,7 +234,7 @@
       ansible.builtin.assert:
         that:
           - switch_back is changed
-          - not switch_back.reboot_required
+          - switch_back.reboot_required  # the saved PORT table was regenerated
           - switch_back.hwsku == current_hwsku
           - saved_hwsku_back.stdout | trim == current_hwsku
           - switch_back.diff.after.PORT.keys() | sort == (config_before.content | b64decode | from_json).PORT.keys() | sort
