@@ -1,0 +1,692 @@
+---
+# The virtual switch exposes Ethernet0, Ethernet4, Ethernet8, ... Ethernet0 is
+# used by the vlan and interface_port targets and Ethernet16-28 by the
+# portchannel, interface_ip and transceiver targets, so this target binds its
+# ACL tables to Ethernet32 and Ethernet36. The virtual SAI supports L3 and L3V6
+# tables and, on recent images, L3V4V6; orchagent publishes which in STATE_DB.
+- name: ACL tests
+  vars:
+    acl_name: BGP_CULL
+    acl_split_name: ACL_TEST_SPLIT
+    acl_combined_name: ACL_TEST_COMBINED
+    acl_port: Ethernet32
+    acl_port2: Ethernet36
+    bgp_rules:
+      - name: DROP_BGP_DST
+        priority: 9999
+        protocol: tcp
+        l4_dst_port: 179
+        action: drop
+      - name: DROP_BGP_SRC
+        priority: 9998
+        protocol: tcp
+        l4_src_port: 179
+        action: drop
+      - name: PERMIT_ALL
+        priority: 1
+        action: forward
+  block:
+    - name: Read the ACL tables
+      community.sonic.get_entry:
+        table: ACL_TABLE
+      register: acl_tables_before
+
+    - name: Check that the test tables do not exist yet
+      ansible.builtin.assert:
+        that:
+          - item not in acl_tables_before.value
+        fail_msg: "ACL table {{ item }} already exists; pick other names for this target"
+      loop:
+        - "{{ acl_name }}"
+        - "{{ acl_name }}_v6"
+        - "{{ acl_split_name }}"
+        - "{{ acl_split_name }}_v6"
+        - "{{ acl_combined_name }}"
+
+    - name: Read the L3V4V6 capability orchagent publishes
+      ansible.builtin.command: sonic-db-cli STATE_DB HGET "ACL_STAGE_CAPABILITY_TABLE|INGRESS" supported_L3V4V6
+      changed_when: false
+      register: l3v4v6_capability
+
+    - name: Work out the layout family_mode=auto should pick
+      ansible.builtin.set_fact:
+        expected_mode: >-
+          {{ 'combined' if l3v4v6_capability.stdout | trim == 'true'
+             else ('split' if l3v4v6_capability.stdout | trim == 'false' else '') }}
+
+    - name: Output the capability
+      ansible.builtin.debug:
+        msg: "supported_L3V4V6={{ l3v4v6_capability.stdout | trim }} expected_mode={{ expected_mode }}"
+
+    # -- family_mode=auto --------------------------------------------------------
+
+    - name: Predict creating the maintenance ACL
+      community.sonic.acl_table:
+        name: "{{ acl_name }}"
+        family_mode: auto
+        stage: ingress
+        ports: ["{{ acl_port }}"]
+        description: Drop BGP during maintenance
+      check_mode: true
+      diff: true
+      register: create_prediction
+
+    - name: Read the ACL tables after check mode
+      community.sonic.get_entry:
+        table: ACL_TABLE
+      register: acl_tables_after_check
+
+    - name: Verify check mode predicted the change without writing
+      ansible.builtin.assert:
+        that:
+          - create_prediction is changed
+          - create_prediction.family_mode in ['combined', 'split']
+          - create_prediction.diff.before == {}
+          - create_prediction.diff.after[acl_name].ports == [acl_port]
+          - acl_name not in acl_tables_after_check.value
+
+    - name: Create the maintenance ACL (platform decides combined vs split)
+      community.sonic.acl_table:
+        name: "{{ acl_name }}"
+        family_mode: auto
+        stage: ingress
+        ports: ["{{ acl_port }}"]
+        description: Drop BGP during maintenance
+      diff: true
+      register: cull
+
+    - name: Create the maintenance ACL again
+      community.sonic.acl_table:
+        name: "{{ acl_name }}"
+        family_mode: auto
+        stage: ingress
+        ports: ["{{ acl_port }}"]
+        description: Drop BGP during maintenance
+      diff: true
+      register: cull_again
+
+    - name: Read the ACL tables
+      community.sonic.get_entry:
+        table: ACL_TABLE
+      register: acl_tables
+
+    - name: Output the ACL tables
+      ansible.builtin.debug:
+        msg: "{{ cull.family_mode }}: {{ cull.tables }} -> {{ acl_tables.value }}"
+
+    - name: Check creation, idempotency and the resolved layout
+      ansible.builtin.assert:
+        that:
+          - cull is changed
+          - cull.family_mode in ['combined', 'split']
+          - expected_mode == '' or cull.family_mode == expected_mode
+          - cull.ports == [acl_port]
+          - cull.diff.before == {}
+          - cull_again is not changed
+          - cull_again.diff.before == cull_again.diff.after
+          - cull_again.family_mode == cull.family_mode
+          - cull_again.tables == cull.tables
+          - (cull.family_mode == 'combined' and cull.tables == [acl_name]
+             and acl_tables.value[acl_name].type == 'L3V4V6')
+            or (cull.family_mode == 'split' and cull.tables == [acl_name, acl_name ~ '_v6']
+                and acl_tables.value[acl_name].type == 'L3'
+                and acl_tables.value[acl_name ~ '_v6'].type == 'L3V6')
+          - acl_tables.value[item].stage == 'ingress'
+          - acl_tables.value[item].ports == [acl_port]
+          - acl_tables.value[item].policy_desc == 'Drop BGP during maintenance'
+      loop: "{{ cull.tables }}"
+
+    - name: Read the table status from STATE_DB
+      ansible.builtin.command: sonic-db-cli STATE_DB HGET "ACL_TABLE_TABLE|{{ item }}" status
+      changed_when: false
+      register: table_status
+      loop: "{{ cull.tables }}"
+
+    - name: Check orchagent accepted the tables
+      ansible.builtin.assert:
+        that:
+          - item.stdout | trim == 'Active'
+        fail_msg: "{{ item.item }} is not Active in STATE_DB: {{ item.stdout }}"
+      loop: "{{ table_status.results }}"
+
+    - name: Query the system for ACL tables
+      ansible.builtin.command: show acl table
+      changed_when: false
+      register: show_acl_table
+
+    - name: Output from system command
+      ansible.builtin.debug:
+        msg: '{{ show_acl_table.stdout }}'
+
+    - name: Check the CLI lists the tables
+      ansible.builtin.assert:
+        that:
+          - show_acl_table.stdout is search('(?m)^' ~ item ~ '\\s+')
+      loop: "{{ cull.tables }}"
+
+    # -- rules -----------------------------------------------------------------------
+
+    - name: Predict the BGP cull rules
+      community.sonic.acl_rule:
+        table: "{{ acl_name }}"
+        rules: "{{ bgp_rules }}"
+        exclusive: true
+      check_mode: true
+      diff: true
+      register: rules_prediction
+
+    - name: Read the ACL rules after check mode
+      community.sonic.get_entry:
+        table: ACL_RULE
+      register: acl_rules_after_check
+
+    - name: Verify check mode predicted the rules without writing
+      ansible.builtin.assert:
+        that:
+          - rules_prediction is changed
+          - rules_prediction.tables == cull.tables
+          - rules_prediction.family_mode == cull.family_mode
+          - rules_prediction.rules | length == 3 * (cull.tables | length)
+          - rules_prediction.diff.before == {}
+          - acl_rules_after_check.value | select('search', '^' ~ acl_name ~ '(_v6)?[|]') | list | length == 0
+
+    - name: Write the BGP cull rules
+      community.sonic.acl_rule:
+        table: "{{ acl_name }}"
+        rules: "{{ bgp_rules }}"
+        exclusive: true
+      diff: true
+      register: rules_result
+
+    - name: Write the BGP cull rules again
+      community.sonic.acl_rule:
+        table: "{{ acl_name }}"
+        rules: "{{ bgp_rules }}"
+        exclusive: true
+      diff: true
+      register: rules_again
+
+    - name: Read the ACL rules
+      community.sonic.get_entry:
+        table: ACL_RULE
+      register: acl_rules
+
+    - name: Output the ACL rules
+      ansible.builtin.debug:
+        msg: '{{ acl_rules.value }}'
+
+    - name: Check the rules were written and are idempotent
+      ansible.builtin.assert:
+        that:
+          - rules_result is changed
+          - rules_result.removed == []
+          - rules_result.rules == rules_prediction.rules
+          - rules_again is not changed
+          - rules_again.diff.before == rules_again.diff.after
+          - acl_rules.value[item ~ '|DROP_BGP_DST'].PRIORITY == '9999'
+          - acl_rules.value[item ~ '|DROP_BGP_DST'].IP_PROTOCOL == '6'
+          - acl_rules.value[item ~ '|DROP_BGP_DST'].L4_DST_PORT == '179'
+          - acl_rules.value[item ~ '|DROP_BGP_DST'].PACKET_ACTION == 'DROP'
+          - acl_rules.value[item ~ '|DROP_BGP_SRC'].L4_SRC_PORT == '179'
+          - acl_rules.value[item ~ '|PERMIT_ALL'].PRIORITY == '1'
+          - acl_rules.value[item ~ '|PERMIT_ALL'].PACKET_ACTION == 'FORWARD'
+      loop: "{{ cull.tables }}"
+
+    - name: Check the IPv6 copies of a split policy carry IP_TYPE IPV6ANY
+      ansible.builtin.assert:
+        that:
+          - acl_rules.value[acl_name ~ '_v6|DROP_BGP_DST'].IP_TYPE == 'IPV6ANY'
+          - acl_rules.value[acl_name ~ '_v6|PERMIT_ALL'].IP_TYPE == 'IPV6ANY'
+          - "'IP_TYPE' not in acl_rules.value[acl_name ~ '|DROP_BGP_DST']"
+      when: cull.family_mode == 'split'
+
+    - name: Read the rule status from STATE_DB
+      ansible.builtin.command: sonic-db-cli STATE_DB HGET "ACL_RULE_TABLE|{{ item }}" status
+      changed_when: false
+      register: rule_status
+      loop: "{{ rules_result.rules }}"
+
+    - name: Check orchagent accepted the rules
+      ansible.builtin.assert:
+        that:
+          - item.stdout | trim == 'Active'
+        fail_msg: "{{ item.item }} is not Active in STATE_DB: {{ item.stdout }}"
+      loop: "{{ rule_status.results }}"
+
+    - name: Query the system for the ACL rules
+      ansible.builtin.command: "show acl rule {{ acl_name }}"
+      changed_when: false
+      register: show_acl_rule
+
+    - name: Output from system command
+      ansible.builtin.debug:
+        msg: '{{ show_acl_rule.stdout }}'
+
+    - name: Check the CLI lists the rules
+      ansible.builtin.assert:
+        that:
+          - show_acl_rule.stdout is search('(?m)^' ~ acl_name ~ '\\s+DROP_BGP_DST\\s+9999\\s+DROP\\b')
+          - show_acl_rule.stdout is search('(?m)^' ~ acl_name ~ '\\s+PERMIT_ALL\\s+1\\s+FORWARD\\b')
+
+    # -- exclusive replacement ----------------------------------------------------------
+
+    - name: Keep only the permit rule
+      community.sonic.acl_rule:
+        table: "{{ acl_name }}"
+        rules:
+          - name: PERMIT_ALL
+            priority: 1
+            action: forward
+        exclusive: true
+      diff: true
+      register: replace_result
+
+    - name: Read the ACL rules after the replacement
+      community.sonic.get_entry:
+        table: ACL_RULE
+      register: acl_rules_replaced
+
+    - name: Check the unlisted rules were removed
+      ansible.builtin.assert:
+        that:
+          - replace_result is changed
+          - replace_result.removed | length == 2 * (cull.tables | length)
+          - (acl_name ~ '|DROP_BGP_DST') in replace_result.removed
+          - (acl_name ~ '|DROP_BGP_DST') in replace_result.diff.before
+          - (acl_name ~ '|DROP_BGP_DST') not in replace_result.diff.after
+          - (acl_name ~ '|DROP_BGP_DST') not in acl_rules_replaced.value
+          - (acl_name ~ '|DROP_BGP_SRC') not in acl_rules_replaced.value
+          - (acl_name ~ '|PERMIT_ALL') in acl_rules_replaced.value
+
+    - name: Modify a rule
+      community.sonic.acl_rule:
+        table: "{{ acl_name }}"
+        rules:
+          - name: PERMIT_ALL
+            priority: 2
+            action: forward
+      diff: true
+      register: modify_result
+
+    - name: Read the modified rule
+      community.sonic.get_entry:
+        table: ACL_RULE
+        key: "{{ acl_name }}|PERMIT_ALL"
+      register: modified_rule
+
+    - name: Check the rule was modified in place
+      ansible.builtin.assert:
+        that:
+          - modify_result is changed
+          - modify_result.removed == []
+          - modify_result.diff.before[acl_name ~ '|PERMIT_ALL'].PRIORITY == '1'
+          - modify_result.diff.after[acl_name ~ '|PERMIT_ALL'].PRIORITY == '2'
+          - modified_rule.value.PRIORITY == '2'
+
+    - name: Put the cull rules back
+      community.sonic.acl_rule:
+        table: "{{ acl_name }}"
+        rules: "{{ bgp_rules }}"
+        exclusive: true
+      register: restore_rules
+
+    - name: Remove the drop rules by name
+      community.sonic.acl_rule:
+        table: "{{ acl_name }}"
+        rules:
+          - name: DROP_BGP_DST
+          - name: DROP_BGP_SRC
+        state: absent
+      diff: true
+      register: remove_rules
+
+    - name: Remove the drop rules by name again
+      community.sonic.acl_rule:
+        table: "{{ acl_name }}"
+        rules:
+          - name: DROP_BGP_DST
+          - name: DROP_BGP_SRC
+        state: absent
+      register: remove_rules_again
+
+    - name: Read the ACL rules after removing by name
+      community.sonic.get_entry:
+        table: ACL_RULE
+      register: acl_rules_removed
+
+    - name: Check removal by name
+      ansible.builtin.assert:
+        that:
+          - restore_rules is changed
+          - remove_rules is changed
+          - remove_rules.removed | length == 2 * (cull.tables | length)
+          - remove_rules.diff.after == {}
+          - remove_rules_again is not changed
+          - (acl_name ~ '|DROP_BGP_DST') not in acl_rules_removed.value
+          - (acl_name ~ '|PERMIT_ALL') in acl_rules_removed.value
+
+    # -- the port set ------------------------------------------------------------------------
+
+    - name: Read the alias of the test port
+      community.sonic.get_entry:
+        table: PORT
+        key: "{{ acl_port }}"
+      register: acl_port_entry
+
+    - name: Bind the table by alias (same set, nothing to do)
+      community.sonic.acl_table:
+        name: "{{ acl_name }}"
+        ports: ["{{ acl_port_entry.value.alias | default(acl_port) }}"]
+      diff: true
+      register: alias_result
+
+    - name: Cull a second port
+      community.sonic.acl_table:
+        name: "{{ acl_name }}"
+        ports: ["{{ acl_port2 }}", "{{ acl_port }}"]
+      diff: true
+      register: add_port
+
+    - name: Read the ACL tables after adding a port
+      community.sonic.get_entry:
+        table: ACL_TABLE
+      register: acl_tables_two_ports
+
+    - name: Uncull the first port
+      community.sonic.acl_table:
+        name: "{{ acl_name }}"
+        ports: ["{{ acl_port2 }}"]
+      diff: true
+      register: remove_port
+
+    - name: Read the ACL tables after removing a port
+      community.sonic.get_entry:
+        table: ACL_TABLE
+      register: acl_tables_one_port
+
+    - name: Uncull everything
+      community.sonic.acl_table:
+        name: "{{ acl_name }}"
+        ports: []
+      diff: true
+      register: no_ports
+
+    - name: Uncull everything again
+      community.sonic.acl_table:
+        name: "{{ acl_name }}"
+        ports: []
+      register: no_ports_again
+
+    - name: Read the ACL tables without ports
+      community.sonic.get_entry:
+        table: ACL_TABLE
+      register: acl_tables_no_ports
+
+    - name: Read the table status after the port changes
+      ansible.builtin.command: sonic-db-cli STATE_DB HGET "ACL_TABLE_TABLE|{{ item }}" status
+      changed_when: false
+      register: table_status_ports
+      loop: "{{ cull.tables }}"
+
+    - name: Check the port set is managed as a set
+      ansible.builtin.assert:
+        that:
+          - alias_result is not changed
+          - alias_result.ports == [acl_port]
+          - add_port is changed
+          - add_port.ports == [acl_port2, acl_port]
+          - acl_tables_two_ports.value[item].ports | sort == [acl_port, acl_port2] | sort
+          - remove_port is changed
+          - acl_tables_one_port.value[item].ports == [acl_port2]
+          - no_ports is changed
+          - no_ports.ports == []
+          - no_ports.diff.after[item].ports == []
+          - no_ports_again is not changed
+          - acl_tables_no_ports.value[item].ports | reject('eq', '') | list == []
+          - acl_tables_no_ports.value[item].type == acl_tables.value[item].type
+          - acl_tables_no_ports.value[item].policy_desc == 'Drop BGP during maintenance'
+      loop: "{{ cull.tables }}"
+
+    - name: Check orchagent still reports the tables as Active
+      ansible.builtin.assert:
+        that:
+          - item.stdout | trim == 'Active'
+        fail_msg: "{{ item.item }} is not Active in STATE_DB: {{ item.stdout }}"
+      loop: "{{ table_status_ports.results }}"
+
+    - name: Check the rules survived the port changes
+      ansible.builtin.assert:
+        that:
+          - (acl_name ~ '|PERMIT_ALL') in acl_rules_removed.value
+
+    # -- failures ------------------------------------------------------------------------------
+
+    - name: Try to write rules to a table that does not exist
+      community.sonic.acl_rule:
+        table: NO_SUCH_TABLE
+        rules: "{{ bgp_rules }}"
+      register: missing_table
+      ignore_errors: true
+
+    - name: Try a rule the ACL table type does not support (DSCP is only matched by MIRROR tables)
+      community.sonic.acl_rule:
+        table: "{{ acl_name }}"
+        rules:
+          - name: BAD_DSCP
+            priority: 5
+            dscp: 46
+            action: drop
+      register: rejected_rule
+      ignore_errors: true
+
+    - name: Remove the rejected rule again
+      community.sonic.acl_rule:
+        table: "{{ acl_name }}"
+        rules:
+          - name: BAD_DSCP
+        state: absent
+
+    - name: Check the failures are reported cleanly
+      ansible.builtin.assert:
+        that:
+          - missing_table is failed
+          - "'does not exist' in missing_table.msg"
+          - rejected_rule is failed
+          - "'orchagent did not accept' in rejected_rule.msg"
+          - "'BAD_DSCP: Inactive' in rejected_rule.msg"
+
+    # -- explicit split layout ---------------------------------------------------------------------
+
+    - name: Create a split policy explicitly
+      community.sonic.acl_table:
+        name: "{{ acl_split_name }}"
+        family_mode: split
+        ports: ["{{ acl_port }}"]
+        description: Split policy
+      diff: true
+      register: split_result
+
+    - name: Read the split tables
+      community.sonic.get_entry:
+        table: ACL_TABLE
+      register: split_tables
+
+    - name: Check the split layout
+      ansible.builtin.assert:
+        that:
+          - split_result is changed
+          - split_result.family_mode == 'split'
+          - split_result.tables == [acl_split_name, acl_split_name ~ '_v6']
+          - split_tables.value[acl_split_name].type == 'L3'
+          - split_tables.value[acl_split_name ~ '_v6'].type == 'L3V6'
+          - split_tables.value[acl_split_name ~ '_v6'].ports == [acl_port]
+
+    - name: Route rules by address family
+      community.sonic.acl_rule:
+        table: "{{ acl_split_name }}"
+        rules:
+          - name: NO_SPOOF_V4
+            priority: 100
+            src_ip: 10.0.0.0/8
+            action: drop
+          - name: NO_SPOOF_V6
+            priority: 100
+            src_ipv6: 2001:db8::/32
+            action: drop
+          - name: PING
+            priority: 50
+            protocol: icmp
+            action: forward
+          - name: PERMIT_ALL
+            priority: 1
+            action: forward
+        exclusive: true
+      diff: true
+      register: split_rules
+
+    - name: Read the split rules
+      community.sonic.get_entry:
+        table: ACL_RULE
+      register: split_rule_entries
+
+    - name: Output the split rules
+      ansible.builtin.debug:
+        msg: "{{ split_rule_entries.value | dict2items | selectattr('key', 'search', '^' ~ acl_split_name) | items2dict }}"
+
+    - name: Check the rules landed in the table of their family
+      ansible.builtin.assert:
+        that:
+          - split_rules is changed
+          - split_rules.family_mode == 'split'
+          - split_rules.rules | length == 6
+          - (acl_split_name ~ '|NO_SPOOF_V4') in split_rule_entries.value
+          - (acl_split_name ~ '_v6|NO_SPOOF_V4') not in split_rule_entries.value
+          - (acl_split_name ~ '_v6|NO_SPOOF_V6') in split_rule_entries.value
+          - (acl_split_name ~ '|NO_SPOOF_V6') not in split_rule_entries.value
+          - split_rule_entries.value[acl_split_name ~ '|NO_SPOOF_V4'].SRC_IP == '10.0.0.0/8'
+          - split_rule_entries.value[acl_split_name ~ '_v6|NO_SPOOF_V6'].SRC_IPV6 == '2001:db8::/32'
+          - split_rule_entries.value[acl_split_name ~ '|PING'].IP_PROTOCOL == '1'
+          - split_rule_entries.value[acl_split_name ~ '_v6|PING'].IP_PROTOCOL == '58'
+          - split_rule_entries.value[acl_split_name ~ '_v6|PING'].IP_TYPE == 'IPV6ANY'
+          - split_rule_entries.value[acl_split_name ~ '_v6|PERMIT_ALL'].IP_TYPE == 'IPV6ANY'
+          - "'IP_TYPE' not in split_rule_entries.value[acl_split_name ~ '|PERMIT_ALL']"
+
+    - name: Predict removing the split policy
+      community.sonic.acl_table:
+        name: "{{ acl_split_name }}"
+        state: absent
+      check_mode: true
+      diff: true
+      register: split_remove_prediction
+
+    - name: Remove the split policy
+      community.sonic.acl_table:
+        name: "{{ acl_split_name }}"
+        state: absent
+      diff: true
+      register: split_remove
+
+    - name: Remove the split policy again
+      community.sonic.acl_table:
+        name: "{{ acl_split_name }}"
+        state: absent
+      register: split_remove_again
+
+    - name: Read the tables and rules after removing the split policy
+      community.sonic.get_entry:
+        table: "{{ item }}"
+      register: after_split_remove
+      loop: [ACL_TABLE, ACL_RULE]
+
+    - name: Check the policy and its rules are gone
+      ansible.builtin.assert:
+        that:
+          - split_remove_prediction is changed
+          - split_remove_prediction.tables == [acl_split_name, acl_split_name ~ '_v6']
+          - split_remove_prediction.rules_removed | length == 6
+          - split_remove is changed
+          - split_remove.diff.after == {}
+          - split_remove.rules_removed | length == 6
+          - split_remove_again is not changed
+          - split_remove_again.tables == []
+          - after_split_remove.results[0].value | select('search', '^' ~ acl_split_name) | list | length == 0
+          - after_split_remove.results[1].value | select('search', '^' ~ acl_split_name) | list | length == 0
+
+    # -- forced combined layout -------------------------------------------------------------------
+
+    - name: Force a combined table (fails cleanly where the ASIC has no L3V4V6)
+      community.sonic.acl_table:
+        name: "{{ acl_combined_name }}"
+        family_mode: combined
+        ports: ["{{ acl_port }}"]
+      register: combined_result
+      ignore_errors: true
+
+    - name: Output the combined result
+      ansible.builtin.debug:
+        msg: "{{ combined_result }}"
+
+    - name: Check the combined table is either Active or reported as rejected
+      ansible.builtin.assert:
+        that:
+          - >-
+            (combined_result is changed and combined_result.family_mode == 'combined'
+             and combined_result.tables == [acl_combined_name])
+            or (combined_result is failed and 'orchagent did not accept' in combined_result.msg
+                and (acl_combined_name ~ ': Inactive') in combined_result.msg)
+          - expected_mode != 'combined' or combined_result is not failed
+          - expected_mode != 'split' or combined_result is failed
+
+    - name: Remove the combined table
+      community.sonic.acl_table:
+        name: "{{ acl_combined_name }}"
+        state: absent
+      register: combined_remove
+
+    - name: Check the combined table was removed
+      ansible.builtin.assert:
+        that:
+          - combined_remove is changed
+
+    # -- cleanup of the maintenance ACL -------------------------------------------------------------
+
+    - name: Remove the maintenance ACL
+      community.sonic.acl_table:
+        name: "{{ acl_name }}"
+        state: absent
+      diff: true
+      register: cull_remove
+
+    - name: Read the tables and rules after the removal
+      community.sonic.get_entry:
+        table: "{{ item }}"
+      register: after_cull_remove
+      loop: [ACL_TABLE, ACL_RULE]
+
+    - name: Wait for orchagent to drop the table status
+      ansible.builtin.command: sonic-db-cli STATE_DB EXISTS "ACL_TABLE_TABLE|{{ item }}"
+      changed_when: false
+      register: status_gone
+      retries: 10
+      delay: 1
+      until: status_gone.stdout | trim == '0'
+      loop: "{{ cull.tables }}"
+
+    - name: Check the maintenance ACL is gone
+      ansible.builtin.assert:
+        that:
+          - cull_remove is changed
+          - cull_remove.tables == cull.tables
+          - cull_remove.rules_removed | length == cull.tables | length
+          - after_cull_remove.results[0].value | select('search', '^' ~ acl_name) | list | length == 0
+          - after_cull_remove.results[1].value | select('search', '^' ~ acl_name) | list | length == 0
+  always:
+    - name: Clean up the ACL tables
+      community.sonic.acl_table:
+        name: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ acl_name }}"
+        - "{{ acl_split_name }}"
+        - "{{ acl_combined_name }}"
+      failed_when: false
