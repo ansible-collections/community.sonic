@@ -2,7 +2,10 @@
 # The virtual switch exposes Ethernet0, Ethernet4, Ethernet8, ... Ethernet0 is
 # used by the vlan and interface_port targets, so this target uses
 # Ethernet16 and Ethernet20 as bundle members and Ethernet24 for the
-# "port is a VLAN member" failure case.
+# "port is a VLAN member" failure case. The default configuration of the
+# virtual switch puts IP addresses on every port, which SONiC (and the module)
+# refuse on a PortChannel member, so the member ports' addresses are removed
+# with the CLI first and restored at the end.
 - name: PortChannel tests
   vars:
     pc_name: PortChannel100
@@ -23,6 +26,35 @@
           - vlan_members_before.value | select('search', '[|]' ~ item ~ '$') | list | length == 0
         fail_msg: "{{ item }} is already a VLAN member; pick other ports for this target"
       loop: "{{ pc_members + [vlan_port] }}"
+
+    - name: Read the INTERFACE table
+      community.sonic.get_entry:
+        table: INTERFACE
+      register: interface_table
+
+    - name: Collect the IP addresses of the member ports
+      ansible.builtin.set_fact:
+        member_ips: >-
+          {{ interface_table.value | select('match', '^(' ~ (pc_members | join('|')) ~ ')[|]')
+             | map('split', '|') | list }}
+
+    - name: Remove the IP addresses from the member ports
+      ansible.builtin.command: "config interface ip remove {{ item[0] }} {{ item[1] }}"
+      become: true
+      changed_when: true
+      loop: "{{ member_ips }}"
+
+    - name: Read the INTERFACE table after removing the addresses
+      community.sonic.get_entry:
+        table: INTERFACE
+      register: interface_table_after
+
+    - name: Check the member ports have no L3 configuration left
+      ansible.builtin.assert:
+        that:
+          - interface_table_after.value | select('match', '^' ~ item ~ '([|]|$)') | list | length == 0
+        fail_msg: "{{ item }} still has INTERFACE entries: {{ interface_table_after.value | select('match', '^' ~ item) | list }}"
+      loop: "{{ pc_members }}"
 
     - name: Predict creating the PortChannel
       community.sonic.portchannel:
@@ -208,11 +240,11 @@
       register: missing_pc_member
       ignore_errors: true
 
-    - name: Try to remove the PortChannel while it is a VLAN member
+    - name: Try to remove the PortChannel while it has members
       community.sonic.portchannel:
         name: "{{ pc_name }}"
         state: absent
-      register: remove_vlan_member_pc
+      register: remove_with_members
       ignore_errors: true
 
     - name: Check the failures are reported cleanly
@@ -222,27 +254,6 @@
           - "'is a member of Vlan' ~ vlan_id in vlan_port_member.msg"
           - missing_pc_member is failed
           - "'does not exist' in missing_pc_member.msg"
-          - remove_vlan_member_pc is failed
-          - "'still a member of Vlan' ~ vlan_id in remove_vlan_member_pc.msg"
-
-    - name: Remove the PortChannel from the VLAN
-      community.sonic.vlan_member:
-        vlanid: "{{ vlan_id }}"
-        interface: "{{ pc_name }}"
-        state: absent
-      register: pc_vlan_remove
-
-    - name: Try to remove the PortChannel while it has members
-      community.sonic.portchannel:
-        name: "{{ pc_name }}"
-        state: absent
-      register: remove_with_members
-      ignore_errors: true
-
-    - name: Check the removal is refused while members exist
-      ansible.builtin.assert:
-        that:
-          - pc_vlan_remove is changed
           - remove_with_members is failed
           - "'still has members' in remove_with_members.msg"
 
@@ -287,6 +298,27 @@
         portchannel: "{{ pc_name }}"
         interface: "{{ pc_members[1] }}"
         state: absent
+
+    - name: Try to remove the PortChannel while it is a VLAN member
+      community.sonic.portchannel:
+        name: "{{ pc_name }}"
+        state: absent
+      register: remove_vlan_member_pc
+      ignore_errors: true
+
+    - name: Remove the PortChannel from the VLAN
+      community.sonic.vlan_member:
+        vlanid: "{{ vlan_id }}"
+        interface: "{{ pc_name }}"
+        state: absent
+      register: pc_vlan_remove
+
+    - name: Check the removal is refused while the PortChannel is a VLAN member
+      ansible.builtin.assert:
+        that:
+          - remove_vlan_member_pc is failed
+          - "'still a member of Vlan' ~ vlan_id in remove_vlan_member_pc.msg"
+          - pc_vlan_remove is changed
 
     - name: Remove the PortChannel
       community.sonic.portchannel:
@@ -350,4 +382,11 @@
       community.sonic.portchannel:
         name: "{{ pc_name }}"
         state: absent
+      failed_when: false
+
+    - name: Restore the IP addresses of the member ports
+      ansible.builtin.command: "config interface ip add {{ item[0] }} {{ item[1] }}"
+      become: true
+      changed_when: true
+      loop: "{{ member_ips | default([]) }}"
       failed_when: false
