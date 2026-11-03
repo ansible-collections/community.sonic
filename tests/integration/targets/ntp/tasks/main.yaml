@@ -2,11 +2,15 @@
 # Exercises ntp, ntp_server and ntp_key on the virtual switch. hostcfgd
 # restarts chrony on every change to the NTP, NTP_SERVER and NTP_KEY tables
 # and chrony regenerates /etc/chrony/chrony.conf and chrony.keys on the way
-# up, so the tests wait for that with a bounded retry. The documentation
-# addresses used as servers are never reached; time synchronisation is not
-# expected to succeed. eth0 keeps its DHCP address, it only becomes the NTP
-# source interface. The original tables are restored at the end, even on
-# failure.
+# up, so the tests wait for that with a bounded retry. systemd refuses more
+# than five starts of chrony within ten seconds (the default start rate
+# limit, which SONiC does not override for chrony); hostcfgd's restart then
+# fails and the files are not regenerated until the next change. Every task
+# that writes to the tables is therefore followed by a short pause so the
+# restarts stay below that limit. The documentation addresses used as servers
+# are never reached; time synchronisation is not expected to succeed. eth0
+# keeps its DHCP address, it only becomes the NTP source interface. The
+# original tables are restored at the end, even on failure.
 
 - name: Record the existing NTP global entry
   community.sonic.get_entry:
@@ -73,6 +77,10 @@
         source_interface: eth0
       diff: true
       register: ntp_set
+
+    - name: Keep chrony restarts below systemd's start rate limit
+      ansible.builtin.pause:
+        seconds: 3
 
     - name: Read the NTP global entry
       community.sonic.get_entry:
@@ -158,6 +166,10 @@
       diff: true
       register: ntp_server_v6
 
+    - name: Keep chrony restarts below systemd's start rate limit
+      ansible.builtin.pause:
+        seconds: 3
+
     - name: Check the module returns what we expect
       ansible.builtin.assert:
         that:
@@ -186,6 +198,10 @@
         iburst: true
       diff: true
       register: ntp_server_list
+
+    - name: Keep chrony restarts below systemd's start rate limit
+      ansible.builtin.pause:
+        seconds: 3
 
     - name: Check only the missing server was added
       ansible.builtin.assert:
@@ -263,6 +279,10 @@
       diff: true
       register: ntp_server_exclusive
 
+    - name: Keep chrony restarts below systemd's start rate limit
+      ansible.builtin.pause:
+        seconds: 3
+
     - name: Check the IPv6 server was removed
       ansible.builtin.assert:
         that:
@@ -292,6 +312,10 @@
       diff: true
       register: ntp_server_disable
 
+    - name: Keep chrony restarts below systemd's start rate limit
+      ansible.builtin.pause:
+        seconds: 3
+
     - name: Read the IPv4 server entry
       community.sonic.get_entry:
         table: NTP_SERVER
@@ -320,6 +344,10 @@
         trusted: true
       diff: true
       register: ntp_key_add
+
+    - name: Keep chrony restarts below systemd's start rate limit
+      ansible.builtin.pause:
+        seconds: 3
 
     - name: Read the key entry
       community.sonic.get_entry:
@@ -374,6 +402,10 @@
       diff: true
       register: ntp_key_untrust
 
+    - name: Keep chrony restarts below systemd's start rate limit
+      ansible.builtin.pause:
+        seconds: 3
+
     - name: Read the key entry again
       community.sonic.get_entry:
         table: NTP_KEY
@@ -399,6 +431,10 @@
         state: absent
       diff: true
       register: ntp_key_remove
+
+    - name: Keep chrony restarts below systemd's start rate limit
+      ansible.builtin.pause:
+        seconds: 3
 
     - name: Remove the key again
       community.sonic.ntp_key:
@@ -436,6 +472,10 @@
       diff: true
       register: ntp_server_remove
 
+    - name: Keep chrony restarts below systemd's start rate limit
+      ansible.builtin.pause:
+        seconds: 3
+
     - name: Check the module returns what we expect
       ansible.builtin.assert:
         that:
@@ -470,15 +510,27 @@
         source_interface: "{{ ntp_original.value.src_intf | default('') }}"
         vrf: "{{ ntp_original.value.vrf | default('default') }}"
 
+    - name: Keep chrony restarts below systemd's start rate limit
+      ansible.builtin.pause:
+        seconds: 3
+
     - name: Restore the original NTP_SERVER table
       community.sonic.ntp_server:
         servers: '{{ ntp_server_original.value | list }}'
         exclusive: true
 
+    - name: Keep chrony restarts below systemd's start rate limit
+      ansible.builtin.pause:
+        seconds: 3
+
     - name: Remove the test key
       community.sonic.ntp_key:
         id: 42
         state: absent
+
+    - name: Keep chrony restarts below systemd's start rate limit
+      ansible.builtin.pause:
+        seconds: 3
 
     - name: Read the restored NTP tables
       community.sonic.get_entry:
