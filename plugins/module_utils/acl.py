@@ -139,6 +139,32 @@ def capability_l3v4v6(state_db, stage):
 # ---------------------------------------------------------------------------
 # STATE_DB status
 # ---------------------------------------------------------------------------
+#
+# orchagent writes ``status`` only after it has processed a CONFIG_DB write
+# (``doAclTableTask``/``doAclRuleTask`` end every SET they finish with
+# ``setAclTableStatus``/``setAclRuleStatus``, for updates of existing objects
+# too, and every DEL with the matching remove). Until then STATE_DB holds the
+# status of the previous configuration, which looks exactly like an answer to
+# the new one. The modules therefore delete a key's status entry right before
+# writing a change to it (:func:`clear_status`) and only accept a status that
+# appeared afterwards: ``None`` keeps :func:`wait_for_status` polling, and an
+# ``Active`` or ``Inactive`` it then sees is unambiguous.
+
+def clear_status(state_db, table, keys):
+    """Delete the STATE_DB status entries of ``keys`` that exist, so the next status seen is orchagent's answer to our write.
+
+    Returns the keys that had an entry. Nothing is deleted in check mode
+    (the wrapper skips writes), and keys without an entry are left alone so
+    unchanged objects keep their status and need no wait.
+    """
+    cleared = []
+    for key in keys:
+        key = join_key(key)
+        if state_db.get_entry(table, key):
+            state_db.delete_entry(table, key)
+            cleared.append(key)
+    return cleared
+
 
 def wait_for_status(state_db, table, keys, timeout):
     """Poll STATE_DB until every key in ``keys`` has ``status=Active`` or ``timeout`` seconds have passed.
@@ -147,7 +173,9 @@ def wait_for_status(state_db, table, keys, timeout):
     (``None`` when orchagent never wrote an entry). Returns as soon as every
     key is ``Active`` or any key is ``Inactive``; the pending states keep
     the wait going until the deadline. A ``timeout`` of ``0`` reads the
-    status once without waiting.
+    status once without waiting. Call :func:`clear_status` for the keys that
+    were changed before writing them, otherwise the status of the previous
+    configuration is returned.
     """
     keys = [join_key(k) for k in keys]
     deadline = monotonic() + max(timeout, 0)

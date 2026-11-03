@@ -35,10 +35,12 @@ class Orchagent(object):
         self.fake = fake
         self.l3v4v6 = l3v4v6
         self.now = 0.0
+        self.sleeps = []
         monkeypatch.setattr(acl, 'monotonic', lambda: self.now)
         monkeypatch.setattr(acl, 'sleep', self.sleep)
 
     def sleep(self, seconds):
+        self.sleeps.append(seconds)
         self.now += seconds
         tables = self.fake.get_table('ACL_TABLE')
         for name in list(self.fake.store.get('ACL_TABLE_TABLE', {})):
@@ -223,13 +225,15 @@ def test_idempotent(fake_swsscommon, run_module, monkeypatch, check_mode):
     fake_swsscommon.seed(PORTS).seed(CAP_SPLIT)
     fake_swsscommon.seed({'ACL_TABLE': {'BGP_CULL': SPLIT_V4, 'BGP_CULL_v6': SPLIT_V6},
                           'ACL_TABLE_TABLE': {'BGP_CULL': {'status': 'Active'}, 'BGP_CULL_v6': {'status': 'Active'}}})
-    Orchagent(fake_swsscommon, monkeypatch)
+    orch = Orchagent(fake_swsscommon, monkeypatch)
     # Ports in another order, an alias and a duplicate are the same set.
     result = run_module(acl_table, params(ports=['Ethernet4', 'QSFP1', 'Ethernet0']), check_mode=check_mode)
     assert result['changed'] is False
     assert result['family_mode'] == 'split'
     assert result['diff']['before'] == result['diff']['after'] == {'BGP_CULL': SPLIT_V4, 'BGP_CULL_v6': SPLIT_V6}
     assert fake_swsscommon.writes == []
+    # Unchanged tables keep their status, so there is nothing to wait for.
+    assert orch.sleeps == []
 
 
 def test_existing_layout_wins_over_capability(fake_swsscommon, run_module, monkeypatch):
@@ -243,18 +247,53 @@ def test_existing_layout_wins_over_capability(fake_swsscommon, run_module, monke
 
 def test_repairs_missing_v6_table(fake_swsscommon, run_module, monkeypatch):
     fake_swsscommon.seed(PORTS).seed(CAP_COMBINED)
-    fake_swsscommon.seed({'ACL_TABLE': {'BGP_CULL': SPLIT_V4}})
+    fake_swsscommon.seed({'ACL_TABLE': {'BGP_CULL': SPLIT_V4}, 'ACL_TABLE_TABLE': {'BGP_CULL': {'status': 'Active'}}})
     Orchagent(fake_swsscommon, monkeypatch)
     result = run_module(acl_table, params())
     assert result['changed'] is True
     assert result['family_mode'] == 'split'
     assert result['diff'] == {'before': {'BGP_CULL': SPLIT_V4}, 'after': {'BGP_CULL': SPLIT_V4, 'BGP_CULL_v6': SPLIT_V6}}
+    # Only the new table is written; the untouched table keeps its STATE_DB status.
     assert fake_swsscommon.writes == [('mod_entry', 'ACL_TABLE', 'BGP_CULL_v6', SPLIT_V6)]
+
+
+def test_update_waits_for_a_fresh_status(fake_swsscommon, run_module, monkeypatch):
+    """Changing an Active table into one orchagent rejects fails, instead of passing on the previous Active."""
+    fake_swsscommon.seed(PORTS).seed(CAP_SPLIT)
+    fake_swsscommon.seed({'ACL_TABLE': {'BGP_CULL': SPLIT_V4, 'BGP_CULL_v6': SPLIT_V6},
+                          'ACL_TABLE_TABLE': {'BGP_CULL': {'status': 'Active'}, 'BGP_CULL_v6': {'status': 'Active'}}})
+    orch = Orchagent(fake_swsscommon, monkeypatch, l3v4v6=False)
+    result = run_module(acl_table, params(type='L3V4V6'), expect_failure=True)
+    assert result['msg'].startswith('orchagent did not accept ACL table BGP_CULL (BGP_CULL: Inactive)')
+    assert orch.sleeps  # the old status was discarded and orchagent's answer awaited
+    assert fake_swsscommon.writes == [
+        ('set_entry', 'ACL_TABLE', 'BGP_CULL_v6', None),
+        ('mod_entry', 'ACL_TABLE', 'BGP_CULL', COMBINED),
+        ('set_entry', 'ACL_TABLE_TABLE', 'BGP_CULL', None),
+    ]
+
+
+def test_update_discards_a_stale_inactive_status(fake_swsscommon, run_module, monkeypatch):
+    """Fixing a rejected table succeeds, instead of failing on the previous Inactive."""
+    fake_swsscommon.seed(PORTS).seed(CAP_SPLIT)
+    fake_swsscommon.seed({'ACL_TABLE': {'BGP_CULL': COMBINED}, 'ACL_TABLE_TABLE': {'BGP_CULL': {'status': 'Inactive'}}})
+    orch = Orchagent(fake_swsscommon, monkeypatch, l3v4v6=False)
+    result = run_module(acl_table, params(family_mode='split'))
+    assert result['changed'] is True
+    assert result['tables'] == ['BGP_CULL', 'BGP_CULL_v6']
+    assert orch.sleeps
+    assert fake_swsscommon.writes == [
+        ('mod_entry', 'ACL_TABLE', 'BGP_CULL', SPLIT_V4),
+        ('mod_entry', 'ACL_TABLE', 'BGP_CULL_v6', SPLIT_V6),
+        ('set_entry', 'ACL_TABLE_TABLE', 'BGP_CULL', None),
+    ]
+    assert fake_swsscommon.get_table('ACL_TABLE_TABLE') == {'BGP_CULL': {'status': 'Active'},
+                                                            'BGP_CULL_v6': {'status': 'Active'}}
 
 
 @pytest.mark.parametrize('check_mode', (True, False))
 def test_port_set_add_and_remove(fake_swsscommon, run_module, monkeypatch, check_mode):
-    fake_swsscommon.seed(PORTS).seed({'ACL_TABLE': {'BGP_CULL': COMBINED}})
+    fake_swsscommon.seed(PORTS).seed({'ACL_TABLE': {'BGP_CULL': COMBINED}, 'ACL_TABLE_TABLE': {'BGP_CULL': {'status': 'Active'}}})
     Orchagent(fake_swsscommon, monkeypatch)
     result = run_module(acl_table, params(ports=['QSFP3', 'Ethernet4']), check_mode=check_mode)
     after = dict(COMBINED, ports=['Ethernet4', 'Ethernet8'])
@@ -262,10 +301,13 @@ def test_port_set_add_and_remove(fake_swsscommon, run_module, monkeypatch, check
     assert result['ports'] == ['Ethernet8', 'Ethernet4']
     assert result['diff'] == {'before': {'BGP_CULL': COMBINED}, 'after': {'BGP_CULL': after}}
     if check_mode:
+        # Neither the table nor its STATE_DB status is touched.
         assert fake_swsscommon.writes == []
     else:
-        # mod_entry, so orchagent updates the bindings instead of recreating the table.
-        assert fake_swsscommon.writes == [('mod_entry', 'ACL_TABLE', 'BGP_CULL', after)]
+        # mod_entry, so orchagent updates the bindings instead of recreating the table;
+        # the status of the old configuration is dropped first.
+        assert fake_swsscommon.writes == [('mod_entry', 'ACL_TABLE', 'BGP_CULL', after),
+                                          ('set_entry', 'ACL_TABLE_TABLE', 'BGP_CULL', None)]
 
 
 def test_omitted_options_are_left_alone(fake_swsscommon, run_module, monkeypatch):

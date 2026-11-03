@@ -32,6 +32,7 @@ description:
     C(Active) in C(STATE_DB) (C(ACL_RULE_TABLE)) and fails with the rejected
     rules otherwise. Which match fields an ASIC supports varies, so only
     portable checks are done up front and the rest is left to orchagent.
+    See the notes for how an update of an existing rule is checked.
 extends_documentation_fragment:
   - community.sonic.attributes
 attributes:
@@ -167,6 +168,11 @@ options:
 notes:
   - A rule in a combined V(L3V4V6) table cannot mix IPv4 and IPv6 match fields; the module fails before writing.
   - Rules of a split policy are written with the same name to both tables.
+  - C(STATE_DB) keeps the status of the previous configuration until orchagent
+    has processed an update, so before writing a new or changed rule the module
+    deletes its C(ACL_RULE_TABLE) status entry and then only accepts the status
+    orchagent writes back. Rules that are not changed keep their status and
+    are not waited for. Nothing is deleted in check mode.
 seealso:
   - module: community.sonic.acl_table
 author:
@@ -266,7 +272,9 @@ from ansible_collections.community.sonic.plugins.module_utils.config_db import (
     ConfigDB,
     ConfigDBError,
     build_result,
+    compare_entries,
     join_key,
+    normalize_entry,
     split_key,
 )
 from ansible_collections.community.sonic.plugins.module_utils import acl
@@ -623,6 +631,10 @@ def run_module():
             db.delete_entry(acl.ACL_RULE, key)
             changed = True
         for key, entry in sorted(desired.items()):
+            if key not in current or compare_entries(normalize_entry(entry), current[key]):
+                # The status in STATE_DB is the previous configuration's until orchagent
+                # has processed this write; drop it so only the new one is accepted.
+                acl.clear_status(state_db, acl.STATE_ACL_RULE_TABLE, [key])
             change = db.ensure_entry(acl.ACL_RULE, key, entry, exclusive=True)
             before[key] = change.before
             after[key] = change.after

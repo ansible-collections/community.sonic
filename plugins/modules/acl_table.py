@@ -22,7 +22,7 @@ description:
   - After writing, the module waits for orchagent to report the table as
     C(Active) in C(STATE_DB) (C(ACL_TABLE_TABLE)) and fails if the ASIC
     rejected it, instead of reporting success for a table that was silently
-    refused.
+    refused. See the notes for how an update of an existing table is checked.
   - Removing a table also removes its rules from C(ACL_RULE).
 extends_documentation_fragment:
   - community.sonic.attributes
@@ -102,6 +102,11 @@ options:
 notes:
   - Writes to an existing table only touch the given fields; orchagent updates
     the port bindings in place without recreating the table or its rules.
+  - C(STATE_DB) keeps the status of the previous configuration until orchagent
+    has processed an update, so before changing a table the module deletes its
+    C(ACL_TABLE_TABLE) status entry and then only accepts the status orchagent
+    writes back. Tables that are not changed keep their status and are not
+    waited for. Nothing is deleted in check mode.
   - Changing O(type) or O(stage) of an existing table makes orchagent remove
     and recreate it, which briefly drops its rules.
 seealso:
@@ -250,16 +255,19 @@ def build_table_entry(table_type, stage, current, ports=None, description=None, 
     return entry
 
 
-def ensure_table(db, table_name, entry):
+def ensure_table(db, state_db, table_name, entry):
     """Write ``entry`` (the complete desired table) if it differs from what is stored; returns an ``EntryChange``.
 
     ``mod_entry`` is used rather than ``set_entry`` so orchagent sees an
     update and adjusts port bindings in place instead of recreating the table.
+    The table's STATE_DB status is cleared first so the status check after
+    the write cannot pick up the status of the previous configuration.
     """
     before = normalize_table(db.get_entry(acl.ACL_TABLE, table_name))
     after = normalize_entry(entry)
     if before == after and (before or db.has_entry(acl.ACL_TABLE, table_name)):
         return EntryChange(False, before, after)
+    acl.clear_status(state_db, acl.STATE_ACL_TABLE_TABLE, [table_name])
     db.mod_entry(acl.ACL_TABLE, table_name, after)
     return EntryChange(True, before, after)
 
@@ -304,14 +312,14 @@ def resolve_layout(module, state_db, name, params, acl_tables):
     return acl.FAMILY_COMBINED, acl.tables_for_mode(name, acl.FAMILY_COMBINED, suffix), True
 
 
-def apply_tables(db, tables, acl_tables, params):
+def apply_tables(db, state_db, tables, acl_tables, params):
     """Write every table in ``tables`` and return ``{name: EntryChange}``."""
     changes = {}
     for table_name, table_type in tables.items():
         current = acl_tables.get(table_name, {})
         entry = build_table_entry(table_type, params['stage'], current, ports=params['ports'],
                                   description=params['description'], services=params['services'])
-        changes[table_name] = ensure_table(db, table_name, entry)
+        changes[table_name] = ensure_table(db, state_db, table_name, entry)
     return changes
 
 
@@ -371,7 +379,7 @@ def run_module():
             changes, rules_removed = remove_tables(db, stale)
             if rules_removed:
                 extra['rules_removed'] = rules_removed
-            changes.update(apply_tables(db, tables, acl_tables, params))
+            changes.update(apply_tables(db, state_db, tables, acl_tables, params))
 
             if probe:
                 statuses = acl.wait_for_status(state_db, acl.STATE_ACL_TABLE_TABLE, [name], timeout)
@@ -382,7 +390,7 @@ def run_module():
                     family_mode = acl.FAMILY_SPLIT
                     tables = acl.tables_for_mode(name, family_mode, params['v6_suffix'])
                     extra.update(tables=list(tables), family_mode=family_mode)
-                    changes.update(apply_tables(db, tables, acl_tables, params))
+                    changes.update(apply_tables(db, state_db, tables, acl_tables, params))
             if not module.check_mode and timeout:
                 acl.check_status(state_db, acl.STATE_ACL_TABLE_TABLE, list(tables), timeout,
                                  'ACL table%s %s' % ('s' if len(tables) > 1 else '', ', '.join(tables)))

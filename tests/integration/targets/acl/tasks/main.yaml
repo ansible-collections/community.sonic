@@ -486,6 +486,29 @@
       register: rejected_rule
       ignore_errors: true
 
+    # STATE_DB keeps the status of the previous configuration until orchagent has
+    # processed an update, so the module must not trust what it finds there.
+    - name: Correct the rejected rule (its stale Inactive status must not fail the module)
+      community.sonic.acl_rule:
+        table: "{{ acl_name }}"
+        rules:
+          - name: BAD_DSCP
+            priority: 5
+            protocol: udp
+            action: drop
+      register: corrected_rule
+
+    - name: Update the now Active rule back to the unsupported match (its stale Active status must not pass it)
+      community.sonic.acl_rule:
+        table: "{{ acl_name }}"
+        rules:
+          - name: BAD_DSCP
+            priority: 5
+            dscp: 46
+            action: drop
+      register: rejected_update
+      ignore_errors: true
+
     - name: Remove the rejected rule again
       community.sonic.acl_rule:
         table: "{{ acl_name }}"
@@ -501,6 +524,10 @@
           - rejected_rule is failed
           - "'orchagent did not accept' in rejected_rule.msg"
           - "'BAD_DSCP: Inactive' in rejected_rule.msg"
+          - corrected_rule is changed
+          - (acl_name ~ '|BAD_DSCP') in corrected_rule.rules
+          - rejected_update is failed
+          - "'BAD_DSCP: Inactive' in rejected_update.msg"
 
     # -- explicit split layout ---------------------------------------------------------------------
 

@@ -42,10 +42,12 @@ class Orchagent(object):
         self.fake = fake
         self.reject = reject
         self.now = 0.0
+        self.sleeps = []
         monkeypatch.setattr(acl, 'monotonic', lambda: self.now)
         monkeypatch.setattr(acl, 'sleep', self.sleep)
 
     def sleep(self, seconds):
+        self.sleeps.append(seconds)
         self.now += seconds
         for key, entry in self.fake.get_table('ACL_RULE').items():
             status = 'Inactive' if any(f in entry for f in self.reject) else 'Active'
@@ -270,16 +272,19 @@ def test_create_split(fake_swsscommon, run_module, monkeypatch, check_mode):
 
 def test_idempotent_and_exclusive(fake_swsscommon, run_module, monkeypatch):
     fake_swsscommon.seed(PORTS).seed(SPLIT)
-    Orchagent(fake_swsscommon, monkeypatch)
+    orch = Orchagent(fake_swsscommon, monkeypatch)
     run_module(acl_rule, dict(table='BGP_CULL', rules=BGP_RULES))
     fake_swsscommon.connectors[:] = []
     stray = {'BGP_CULL|OLD': {'PRIORITY': '5', 'PACKET_ACTION': 'DROP'}, 'OTHER|X': {'PRIORITY': '5', 'PACKET_ACTION': 'DROP'}}
     fake_swsscommon.seed({'ACL_RULE': stray})
+    orch.sleeps[:] = []
 
     result = run_module(acl_rule, dict(table='BGP_CULL', rules=BGP_RULES))
     assert result['changed'] is False
     assert result['diff']['before'] == result['diff']['after']
     assert fake_swsscommon.writes == []
+    # Unchanged rules keep their Active status, so there is nothing to wait for.
+    assert orch.sleeps == []
 
     result = run_module(acl_rule, dict(table='BGP_CULL', rules=BGP_RULES, exclusive=True), check_mode=True)
     assert result['changed'] is True
@@ -303,6 +308,54 @@ def test_modify_rule(fake_swsscommon, run_module, monkeypatch):
     assert result['changed'] is True
     assert result['diff'] == {'before': {'BGP_CULL|PERMIT_ALL': before}, 'after': {'BGP_CULL|PERMIT_ALL': after}}
     assert fake_swsscommon.writes == [('set_entry', 'ACL_RULE', 'BGP_CULL|PERMIT_ALL', after)]
+
+
+def test_update_waits_for_a_fresh_status(fake_swsscommon, run_module, monkeypatch):
+    """Changing an Active rule into one orchagent rejects fails, instead of passing on the previous Active."""
+    before = dict(BGP_ENTRIES['PERMIT_ALL'], IP_TYPE='IP')
+    fake_swsscommon.seed(PORTS).seed(COMBINED).seed({
+        'ACL_RULE': {'BGP_CULL|PERMIT_ALL': before}, 'ACL_RULE_TABLE': {'BGP_CULL|PERMIT_ALL': {'status': 'Active'}}})
+    orch = Orchagent(fake_swsscommon, monkeypatch, reject=('DSCP',))
+    result = run_module(acl_rule, dict(table='BGP_CULL', rules=[dict(name='PERMIT_ALL', priority=1, action='forward', dscp=46)]),
+                        expect_failure=True)
+    assert result['msg'].startswith('orchagent did not accept ACL rule in BGP_CULL (BGP_CULL|PERMIT_ALL: Inactive)')
+    assert orch.sleeps  # the old status was discarded and orchagent's answer awaited
+    assert fake_swsscommon.writes == [
+        ('set_entry', 'ACL_RULE', 'BGP_CULL|PERMIT_ALL', {'PRIORITY': '1', 'PACKET_ACTION': 'FORWARD', 'DSCP': '46'}),
+        ('set_entry', 'ACL_RULE_TABLE', 'BGP_CULL|PERMIT_ALL', None),
+    ]
+
+
+def test_update_discards_a_stale_inactive_status(fake_swsscommon, run_module, monkeypatch):
+    """Fixing a rejected rule succeeds, instead of failing on the previous Inactive; other rules are left alone."""
+    bad = {'PRIORITY': '5', 'PACKET_ACTION': 'DROP', 'DSCP': '46'}
+    permit = dict(BGP_ENTRIES['PERMIT_ALL'], IP_TYPE='IP')
+    fake_swsscommon.seed(PORTS).seed(COMBINED).seed({
+        'ACL_RULE': {'BGP_CULL|BAD': bad, 'BGP_CULL|PERMIT_ALL': permit},
+        'ACL_RULE_TABLE': {'BGP_CULL|BAD': {'status': 'Inactive'}, 'BGP_CULL|PERMIT_ALL': {'status': 'Active'}}})
+    orch = Orchagent(fake_swsscommon, monkeypatch, reject=('DSCP',))
+    result = run_module(acl_rule, dict(table='BGP_CULL', rules=[
+        dict(name='BAD', priority=5, protocol='udp', action='drop'), dict(name='PERMIT_ALL', priority=1, action='forward')]))
+    fixed = {'PRIORITY': '5', 'PACKET_ACTION': 'DROP', 'IP_PROTOCOL': '17'}
+    assert result['changed'] is True
+    assert result['diff']['after']['BGP_CULL|BAD'] == fixed
+    assert orch.sleeps
+    # Only the changed rule is written and only its status is cleared.
+    assert fake_swsscommon.writes == [('set_entry', 'ACL_RULE', 'BGP_CULL|BAD', fixed),
+                                      ('set_entry', 'ACL_RULE_TABLE', 'BGP_CULL|BAD', None)]
+    assert fake_swsscommon.get_entry('ACL_RULE_TABLE', 'BGP_CULL|BAD') == {'status': 'Active'}
+
+
+def test_update_in_check_mode_keeps_the_status(fake_swsscommon, run_module, monkeypatch):
+    before = dict(BGP_ENTRIES['PERMIT_ALL'], IP_TYPE='IP')
+    fake_swsscommon.seed(PORTS).seed(COMBINED).seed({
+        'ACL_RULE': {'BGP_CULL|PERMIT_ALL': before}, 'ACL_RULE_TABLE': {'BGP_CULL|PERMIT_ALL': {'status': 'Active'}}})
+    orch = Orchagent(fake_swsscommon, monkeypatch)
+    result = run_module(acl_rule, dict(table='BGP_CULL', rules=[dict(name='PERMIT_ALL', priority=2, action='drop')]),
+                        check_mode=True)
+    assert result['changed'] is True
+    assert fake_swsscommon.writes == []
+    assert orch.sleeps == []
 
 
 def test_exclusive_with_no_rules_empties_the_tables(fake_swsscommon, run_module):

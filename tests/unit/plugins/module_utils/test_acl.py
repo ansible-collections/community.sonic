@@ -93,6 +93,24 @@ def test_capability_l3v4v6(entry, expected):
 
 # -- status -----------------------------------------------------------------------
 
+def test_clear_status_deletes_existing_entries_only():
+    db, fake = state_db({'ACL_RULE_TABLE': {'X|R1': {'status': 'Active'}, 'X|R2': {'status': 'Inactive'}}})
+    assert acl.clear_status(db, 'ACL_RULE_TABLE', [('X', 'R1'), 'X|R2', ('X', 'R3')]) == ['X|R1', 'X|R2']
+    assert fake.get_table('ACL_RULE_TABLE') == {}
+    assert fake.writes == [('set_entry', 'ACL_RULE_TABLE', 'X|R1', None), ('set_entry', 'ACL_RULE_TABLE', 'X|R2', None)]
+
+
+def test_clear_status_in_check_mode_writes_nothing():
+    class Module(object):
+        check_mode = True
+
+    fake = FakeSwssCommon({'ACL_TABLE_TABLE': {'X': {'status': 'Active'}}})
+    db = ConfigDB(Module(), db_name='STATE_DB', connector=fake.ConfigDBConnector()).connect()
+    assert acl.clear_status(db, 'ACL_TABLE_TABLE', ['X']) == ['X']
+    assert fake.writes == []
+    assert fake.get_entry('ACL_TABLE_TABLE', 'X') == {'status': 'Active'}
+
+
 def test_wait_for_status_active_immediately(clock):
     db, _fake = state_db({'ACL_TABLE_TABLE': {'X': {'status': 'Active'}, 'X_v6': {'status': 'Active'}}})
     assert acl.wait_for_status(db, 'ACL_TABLE_TABLE', ['X', 'X_v6'], 30) == {'X': 'Active', 'X_v6': 'Active'}
