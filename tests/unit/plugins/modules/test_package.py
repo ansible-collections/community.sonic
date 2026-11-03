@@ -17,6 +17,7 @@ from ansible_collections.community.sonic.tests.unit.fake_spm import BUILT_IN, re
 
 REPO = 'registry.example.net/sonic/my-exporter'
 TARBALL = '/tmp/my-exporter-1.4.2.tar'
+DIGEST = 'sha256:' + '9c' * 32
 
 
 def seed_exporter(spm, default_reference='1.4.2', **kwargs):
@@ -76,6 +77,8 @@ def test_install_arguments_enabled_false_passes_nothing():
     ('registry.example.net:5000/sonic/x', '1.0.0', ['--from-repository', 'registry.example.net:5000/sonic/x:1.0.0']),
     ('registry.example.net/sonic/x:2.0.0', '1.0.0', ['--from-repository', 'registry.example.net/sonic/x:2.0.0']),
     ('registry.example.net/sonic/x@sha256:abcd', '1.0.0', ['--from-repository', 'registry.example.net/sonic/x@sha256:abcd']),
+    ('registry.example.net/sonic/x', 'stable', ['--from-repository', 'registry.example.net/sonic/x:stable']),
+    ('registry.example.net/sonic/x', DIGEST, ['--from-repository', 'registry.example.net/sonic/x@' + DIGEST]),
 ))
 def test_source_arguments(source, version, expected):
     assert package.source_arguments(source, version) == expected
@@ -224,10 +227,136 @@ def test_downgrade_with_allow_downgrade(spm, run_module):
 
 def test_non_semver_version_uses_reference_syntax(spm, run_module):
     seed_exporter(spm)
-    spm.registry[REPO + ':latest'] = ('my-exporter', 'latest')
     result = run_module(package, dict(name='my-exporter', version='latest'))
     assert result['changed'] is True
-    assert spm.calls == [['install', '-y', 'my-exporter@latest']]
+    # The tag is resolved to its manifest version for the report, but SPM is asked for the tag.
+    assert result['version'] == '1.5.0'
+    assert spm.calls == [['show', 'package', 'manifest', 'my-exporter@latest'], ['install', '-y', 'my-exporter@latest']]
+    assert installed(spm) == (True, '1.5.0')
+
+
+# -- non-SemVer references (moving tags, digests) ------------------------------
+#
+# SPM records the manifest version as the installed version, so a tag such as
+# ``stable`` or a digest can only be compared after resolving it through the
+# registry (``show package manifest name@reference``).
+
+SHOW_STABLE = ['show', 'package', 'manifest', 'my-exporter@stable']
+
+
+def seed_stable(spm, points_at='1.4.2', installed_version='1.4.2'):
+    seed_exporter(spm, default_reference='stable', installed=True, version=installed_version)
+    spm.registry[REPO + ':stable'] = ('my-exporter', points_at)
+
+
+def test_latest_non_semver_default_reference_is_idempotent(spm, run_module):
+    seed_stable(spm)
+    for check_mode in (False, True):
+        result = run_module(package, dict(name='my-exporter', state='latest'), check_mode=check_mode)
+        assert result['changed'] is False
+        assert result['version'] == '1.4.2'
+        assert result['commands'] == []
+        assert spm.calls == [SHOW_STABLE]
+        spm.calls = []
+
+
+def test_latest_digest_default_reference_is_idempotent(spm, run_module):
+    seed_exporter(spm, default_reference=DIGEST, installed=True, version='1.4.2')
+    spm.registry[REPO + '@' + DIGEST] = ('my-exporter', '1.4.2')
+    result = run_module(package, dict(name='my-exporter', state='latest'))
+    assert result['changed'] is False
+    assert result['version'] == '1.4.2'
+    assert spm.calls == [['show', 'package', 'manifest', 'my-exporter@' + DIGEST]]
+
+
+def test_latest_non_semver_default_reference_upgrades_when_it_moves(spm, run_module):
+    seed_stable(spm, points_at='1.5.0')
+    result = run_module(package, dict(name='my-exporter', state='latest'), check_mode=True)
+    assert result['changed'] is True
+    assert result['version'] == '1.5.0'
+    assert result['diff'] == {
+        'before': {'installed': True, 'version': '1.4.2', 'repository': REPO},
+        'after': {'installed': True, 'version': '1.5.0', 'repository': REPO},
+    }
+    assert spm.calls == [SHOW_STABLE]
+    spm.calls = []
+    result = run_module(package, dict(name='my-exporter', state='latest'))
+    assert result['changed'] is True
+    assert result['version'] == '1.5.0'
+    # SPM is asked for the tag, not for the version it resolved to.
+    assert spm.calls == [SHOW_STABLE, ['install', '-y', 'my-exporter@stable']]
+    assert installed(spm) == (True, '1.5.0')
+    spm.calls = []
+    result = run_module(package, dict(name='my-exporter', state='latest'))
+    assert result['changed'] is False
+    assert spm.calls == [SHOW_STABLE]
+
+
+def test_latest_digest_default_reference_upgrades(spm, run_module):
+    seed_exporter(spm, default_reference=DIGEST, installed=True, version='1.4.2')
+    spm.registry[REPO + '@' + DIGEST] = ('my-exporter', '1.5.0')
+    result = run_module(package, dict(name='my-exporter', state='latest'))
+    assert result['changed'] is True
+    assert result['version'] == '1.5.0'
+    assert spm.calls == [['show', 'package', 'manifest', 'my-exporter@' + DIGEST],
+                         ['install', '-y', 'my-exporter@' + DIGEST]]
+
+
+def test_latest_semver_default_reference_does_not_query_the_registry(spm, run_module):
+    seed_exporter(spm, default_reference='1.4.2', installed=True, version='1.4.2')
+    result = run_module(package, dict(name='my-exporter', state='latest'))
+    assert result['changed'] is False
+    assert spm.calls == []
+
+
+def test_present_with_tag_version_is_idempotent(spm, run_module):
+    seed_stable(spm)
+    result = run_module(package, dict(name='my-exporter', version='stable'))
+    assert result['changed'] is False
+    assert result['version'] == '1.4.2'
+    assert spm.calls == [SHOW_STABLE]
+
+
+def test_present_with_tag_version_upgrades_when_it_moves(spm, run_module):
+    seed_stable(spm, points_at='1.5.0')
+    result = run_module(package, dict(name='my-exporter', version='stable'))
+    assert result['changed'] is True
+    assert result['version'] == '1.5.0'
+    assert spm.calls == [SHOW_STABLE, ['install', '-y', 'my-exporter@stable']]
+
+
+def test_present_with_digest_and_source_is_idempotent(spm, run_module):
+    seed_exporter(spm, installed=True, version='1.4.2')
+    spm.registry[REPO + '@' + DIGEST] = ('my-exporter', '1.4.2')
+    result = run_module(package, dict(name='my-exporter', source=REPO, version=DIGEST))
+    assert result['changed'] is False
+    assert spm.calls == [['show', 'package', 'manifest', '--from-repository', REPO + '@' + DIGEST]]
+    spm.calls = []
+    result = run_module(package, dict(name='my-exporter', source=REPO + '@' + DIGEST))
+    assert result['changed'] is False
+    assert spm.calls == []
+
+
+def test_fresh_install_with_tag_reports_resolved_version(spm, run_module):
+    seed_exporter(spm, default_reference='stable')
+    spm.registry[REPO + ':stable'] = ('my-exporter', '1.4.2')
+    result = run_module(package, dict(name='my-exporter'), check_mode=True)
+    assert result['changed'] is True
+    assert result['version'] == '1.4.2'
+    assert spm.calls == [SHOW_STABLE]
+    spm.calls = []
+    result = run_module(package, dict(name='my-exporter'))
+    assert result['changed'] is True
+    assert result['version'] == '1.4.2'
+    assert spm.calls == [SHOW_STABLE, ['install', '-y', 'my-exporter@stable']]
+
+
+def test_unresolvable_reference_is_reported(spm, run_module):
+    seed_stable(spm)
+    result = run_module(package, dict(name='my-exporter', version='nightly'), expect_failure=True)
+    assert result['msg'] == ('sonic-package-manager show package manifest failed with rc 1: Failed to print '
+                             'manifest: Failed to retrieve manifest for %s:nightly' % REPO)
+    assert spm.calls == [['show', 'package', 'manifest', 'my-exporter@nightly']]
 
 
 def test_install_without_repository_fails(spm, run_module):

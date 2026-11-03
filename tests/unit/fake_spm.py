@@ -91,7 +91,8 @@ class FakeSpm(object):
         self.euid = 0
         # path -> (name, version, repository) for --from-tarball sources
         self.tarballs = {}
-        # 'repo:tag' -> (name, version) for --from-repository sources and name==version installs
+        # 'repo:tag' or 'repo@sha256:...' -> (name, version) for --from-repository sources,
+        # name==version / name@reference installs and 'show package manifest'
         self.registry = {}
         # name -> list of tags returned by 'show package versions'
         self.versions = {}
@@ -146,12 +147,45 @@ class FakeSpm(object):
         assert args == []
         return 0, render_list(self.database()), ''
 
+    @staticmethod
+    def _registry_key(repository, reference):
+        """The key SPM would ask the registry for: ``repo@sha256:...`` for a digest, else ``repo:tag``."""
+        return '%s%s%s' % (repository, '@' if reference.startswith('sha256:') else ':', reference)
+
+    def _resolve_expression(self, db, expression):
+        """Resolve ``name``, ``name==version`` or ``name@reference`` like SPM's get_package_source."""
+        if '==' in expression:
+            name, reference = expression.split('==', 1)
+        elif '@' in expression:
+            name, reference = expression.split('@', 1)
+        else:
+            name, reference = expression, None
+        if name not in db:
+            return None, None, 'Package %s is not found in database' % name
+        if reference is None:
+            if db[name].get('installed'):
+                return name, db[name]['installed-version'], None
+            reference = db[name].get('default-reference')
+            if reference is None:
+                return None, None, 'No default reference tag. Please specify the version or tag explicitly'
+        key = self._registry_key(db[name]['repository'], reference)
+        if key not in self.registry:
+            return None, None, 'Failed to retrieve manifest for %s' % key
+        return self.registry[key] + (None,)
+
     def _show(self, args):
-        if args[:3] == ['package', 'manifest', '--from-tarball']:
-            name, version, repository = self.tarballs[args[3]]
-            return 0, json.dumps({'package': {'name': name, 'version': version}}), ''
-        if args[:3] == ['package', 'manifest', '--from-repository']:
-            name, version = self.registry[args[3]]
+        if args[:2] == ['package', 'manifest'] and len(args) in (3, 4):
+            if args[2] == '--from-tarball':
+                name, version, repository = self.tarballs[args[3]]
+            elif args[2] == '--from-repository':
+                if args[3] not in self.registry:
+                    return 1, 'Failed to print manifest: Failed to retrieve manifest for %s\n' % args[3], ''
+                name, version = self.registry[args[3]]
+            else:
+                assert len(args) == 3, args
+                name, version, error = self._resolve_expression(self.database(), args[2])
+                if error:
+                    return 1, 'Failed to print manifest: %s\n' % error, ''
             return 0, json.dumps({'package': {'name': name, 'version': version}}), ''
         if args[:2] == ['package', 'versions']:
             assert args[3:] == ['--plain']
@@ -233,26 +267,13 @@ class FakeSpm(object):
             if ref not in self.registry:
                 return 1, '', 'Failed to install %s: manifest unknown\n' % ref
             name, version = self.registry[ref]
-            repository = ref.rsplit(':', 1)[0]
+            repository = ref.split('@', 1)[0].rsplit(':', 1)[0]
         else:
             assert source is not None
-            if '==' in source:
-                name, version = source.split('==', 1)
-            elif '@' in source:
-                name, version = source.split('@', 1)
-            else:
-                name, version = source, None
-            if name not in db:
-                return 1, '', 'Failed to install %s: Package %s is not found in database\n' % (source, name)
+            name, version, error = self._resolve_expression(db, source)
+            if error:
+                return 1, '', 'Failed to install %s: %s\n' % (source, error)
             repository = db[name]['repository']
-            if version is None:
-                version = db[name].get('default-reference')
-                if version is None:
-                    return 1, '', ('Failed to install %s: No default reference tag. Please specify the version or '
-                                   'tag explicitly\n' % source)
-            if '%s:%s' % (repository, version) not in self.registry:
-                return 1, '', 'Failed to install %s: manifest unknown\n' % source
-            name, version = self.registry['%s:%s' % (repository, version)]
 
         rec = db.get(name) or record(repository=repository)
         if rec.get('installed'):

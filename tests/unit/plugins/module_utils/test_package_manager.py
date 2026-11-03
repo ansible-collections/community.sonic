@@ -111,12 +111,40 @@ def test_normalize_version(version, expected):
     ('1.4.2', 'pkg==1.4.2'),
     ('1.4.2-rc1', 'pkg==1.4.2-rc1'),
     ('1.4.2+build.7', 'pkg==1.4.2+build.7'),
+    ('1.4.2_build.7', 'pkg@1.4.2_build.7'),
     ('v1.4.2', 'pkg@v1.4.2'),
     ('latest', 'pkg@latest'),
     ('sha256:0123abcd', 'pkg@sha256:0123abcd'),
 ))
 def test_package_expression(version, expected):
     assert pm.package_expression('pkg', version) == expected
+
+
+@pytest.mark.parametrize('version,expected', (
+    (None, False),
+    ('1.4.2', True),
+    ('1.4.2-rc1', True),
+    ('1.4.2+build.7', True),
+    ('1.4.2_build.7', True),
+    ('v1.4.2', False),
+    ('1.4', False),
+    ('stable', False),
+    ('latest', False),
+    ('sha256:' + '0' * 64, False),
+))
+def test_is_semver(version, expected):
+    assert pm.is_semver(version) is expected
+
+
+@pytest.mark.parametrize('reference,expected', (
+    (None, False),
+    ('1.4.2', False),
+    ('stable', False),
+    ('sha256:' + '0' * 64, True),
+    (' sha256:abc', True),
+))
+def test_is_digest(reference, expected):
+    assert pm.is_digest(reference) is expected
 
 
 def test_is_tarball_source(tmp_path):

@@ -50,10 +50,13 @@ options:
     description:
       - The version to install, passed to SPM as C(name==version) (or
         C(name@reference) for a tag or digest that is not a SemVer version).
-      - "The module compares it with the installed version recorded by SPM,
-        which is the C(package.version) of the manifest: use the manifest
-        version (the tag of a SONiC package conventionally equals it), not a
-        digest, or every run tries to reinstall."
+      - The module compares it with the installed version recorded by SPM,
+        which is the C(package.version) of the manifest. A SemVer version is
+        compared as it is (the tag of a SONiC package conventionally equals
+        its manifest version). Any other reference, such as a C(stable) tag or
+        a C(sha256:...) digest, is first resolved to the manifest version it
+        points at with C(sonic-package-manager show package manifest), which
+        contacts the registry, so a run with the same reference reports no change.
       - When omitted with O(state=present), an installed package is left as it
         is and a missing one is installed from the repository's default
         reference (or from O(source)).
@@ -82,6 +85,10 @@ options:
         none is set, to the highest SemVer release tag the registry offers
         (pre-releases are skipped). With
         O(source) the manifest version of the source is used.
+      - A default reference that is not a SemVer version (a moving tag such as
+        C(stable), or a digest) is resolved to its manifest version through the
+        registry on every run, so the package is only reinstalled when the
+        reference points at a different version than the installed one.
       - V(absent) uninstalls the package. The repository entry stays in the
         database; remove it with M(community.sonic.package_repository).
     type: str
@@ -229,8 +236,8 @@ commands:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.community.sonic.plugins.module_utils.package_manager import (
-    STATUS_NOT_INSTALLED, PackageManager, PackageManagerError, is_tarball_source, normalize_version,
-    package_expression, package_status)
+    STATUS_NOT_INSTALLED, PackageManager, PackageManagerError, is_digest, is_semver, is_tarball_source,
+    normalize_version, package_expression, package_status)
 
 
 def state_view(entry):
@@ -241,12 +248,16 @@ def state_view(entry):
 
 
 def source_arguments(source, version):
-    """Return the ``--from-tarball``/``--from-repository`` arguments for ``source``."""
+    """Return the ``--from-tarball``/``--from-repository`` arguments for ``source``.
+
+    A registry ``source`` without a tag or digest gets ``version`` appended,
+    as ``repo:tag`` or ``repo@sha256:...`` for a digest.
+    """
     if is_tarball_source(source):
         return ['--from-tarball', source]
     reference = source
     if version is not None and '@' not in source and ':' not in source.rsplit('/', 1)[-1]:
-        reference = '%s:%s' % (source, version)
+        reference = '%s%s%s' % (source, '@' if is_digest(version) else ':', version)
     return ['--from-repository', reference]
 
 
@@ -314,11 +325,7 @@ def resolve_latest(spm, name, entry, params):
     """Return the version ``state=latest`` should install."""
     source = params['source']
     if source is not None:
-        manifest = spm.show_manifest(source_arguments(source, None))
-        version = (manifest.get('package') or {}).get('version')
-        if not version:
-            raise PackageManagerError('the manifest of %s does not contain a package version' % source)
-        return str(version)
+        return manifest_version(spm, source_arguments(source, None), source)
     if entry is None:
         raise PackageManagerError('no repository named %s is registered; add one with '
                                   'community.sonic.package_repository or set source' % name)
@@ -332,6 +339,31 @@ def resolve_latest(spm, name, entry, params):
                                   'reference and the registry offers no SemVer tags; set version or '
                                   'default_reference' % name)
     return version
+
+
+def manifest_version(spm, source_args, what):
+    """Return the ``package.version`` of the manifest ``sonic-package-manager show package manifest`` prints."""
+    manifest = spm.show_manifest(source_args)
+    version = (manifest.get('package') or {}).get('version')
+    if not version:
+        raise PackageManagerError('the manifest of %s does not contain a package version' % what)
+    return str(version)
+
+
+def resolve_reference(spm, name, reference, params):
+    """Return the manifest version ``reference`` points at.
+
+    SPM records the manifest version (SemVer) as the installed version, so a
+    SemVer ``reference`` is returned unchanged. A moving tag (``stable``) or a
+    digest (``sha256:...``) is looked up through the registry, the same way
+    SPM does before it decides between "already installed" and an upgrade.
+    """
+    if reference is None or is_semver(reference):
+        return reference
+    if params['source'] is not None:
+        return manifest_version(spm, source_arguments(params['source'], reference), params['source'])
+    expression = package_expression(name, reference)
+    return manifest_version(spm, [expression], expression)
 
 
 def run_module():
@@ -387,11 +419,15 @@ def run_module():
                     if not entry.get('default_reference'):
                         module.fail_json(msg='repository %s has no default reference; set version' % name)
                     target = entry['default_reference']
-                after = dict(installed=True, version=target, repository=before['repository'])
-            elif target is not None and normalize_version(target) != normalize_version(entry['version']):
+            # ``target`` is what SPM is asked to install (``name==1.4.2``, ``name@stable``, a digest);
+            # ``version`` is the manifest version it points at, which is what SPM records and compares.
+            version = resolve_reference(spm, name, target, params)
+            if not installed:
+                after = dict(installed=True, version=version, repository=before['repository'])
+            elif version is not None and normalize_version(version) != normalize_version(entry['version']):
                 if entry['built_in']:
                     module.fail_json(msg='package %s is built-in and cannot be upgraded' % name)
-                after = dict(installed=True, version=target, repository=before['repository'])
+                after = dict(installed=True, version=version, repository=before['repository'])
             if after != before and not module.check_mode:
                 spm.run_privileged(install_arguments(params, target, upgrade=installed),
                                    'sonic-package-manager install %s' % name)

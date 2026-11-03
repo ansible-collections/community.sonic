@@ -173,6 +173,21 @@ def normalize_version(version):
     return str(version).strip().replace('_', '+')
 
 
+def is_semver(version):
+    """Return whether ``version`` is a SemVer version (``1.4.2``, ``1.4.2-rc1``, ``1.4.2+build.7``, ``1.4.2_build.7``).
+
+    Anything else, such as a ``stable`` tag or a ``sha256:...`` digest, is a
+    registry reference that has to be resolved to a manifest version before
+    it can be compared with the installed version.
+    """
+    return version is not None and bool(_SEMVER_RE.match(normalize_version(version)))
+
+
+def is_digest(reference):
+    """Return whether ``reference`` is an image digest (``sha256:...``) rather than a tag."""
+    return reference is not None and str(reference).strip().startswith('sha256:')
+
+
 def package_expression(name, version):
     """Build the ``PACKAGE_EXPR`` argument of ``sonic-package-manager install``.
 
@@ -183,6 +198,8 @@ def package_expression(name, version):
     if version is None:
         return name
     version = str(version).strip()
+    # SPM parses ``==`` with a strict SemVer parser, so a Docker tag such as
+    # ``1.4.2_build7`` (``+`` replaced by ``_``) has to go through ``name@tag``.
     if _SEMVER_RE.match(version):
         return '%s==%s' % (name, version)
     return '%s@%s' % (name, version)
