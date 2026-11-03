@@ -1,0 +1,3 @@
+---
+minor_changes:
+  - Add the ``sflow``, ``sflow_collector`` and ``sflow_session`` modules to manage the global sFlow state (``SFLOW|global``), collectors including the collector VRF (``SFLOW_COLLECTOR``) and per-interface sampling sessions (``SFLOW_SESSION``), with port alias support for sessions and the agent interface (https://github.com/ansible-collections/community.sonic/issues/23).

@@ -1,0 +1,520 @@
+---
+# The sflow container may be disabled in the FEATURE table on the virtual
+# switch, so the checks below only look at CONFIG_DB. Everything created here
+# is removed again and the previous global state is restored at the end.
+
+- name: Record the sFlow state before the test
+  community.sonic.get_entry:
+    table: "{{ item }}"
+  loop: [SFLOW, SFLOW_COLLECTOR, SFLOW_SESSION, FEATURE]
+  register: sflow_before
+
+- name: Remember the previous entries
+  ansible.builtin.set_fact:
+    sflow_global_before: "{{ sflow_before.results[0].value.global | default({}) }}"
+    sflow_collectors_before: "{{ sflow_before.results[1].value }}"
+    sflow_sessions_before: "{{ sflow_before.results[2].value }}"
+
+- name: Show the previous state
+  ansible.builtin.debug:
+    msg:
+      global: "{{ sflow_global_before }}"
+      collectors: "{{ sflow_collectors_before }}"
+      sessions: "{{ sflow_sessions_before }}"
+      feature: "{{ sflow_before.results[3].value.sflow | default({}) }}"
+
+- name: Look up the alias of Ethernet0
+  community.sonic.get_entry:
+    table: PORT
+    key: Ethernet0
+  register: ethernet0
+
+- name: Run the sFlow tests
+  block:
+    # --- sflow (global) ------------------------------------------------------
+
+    - name: Predict enabling sFlow
+      community.sonic.sflow:
+        enabled: true
+        agent_id: eth0
+        polling_interval: 20
+        sample_direction: rx
+      check_mode: true
+      diff: true
+      register: sflow_prediction
+
+    - name: Read the global entry after check mode
+      community.sonic.get_entry:
+        table: SFLOW
+        key: global
+      register: sflow_after_check_mode
+
+    - name: Check that check mode predicted a change without writing
+      ansible.builtin.assert:
+        that:
+          - sflow_prediction is changed
+          - sflow_prediction.agent_id == 'eth0'
+          - sflow_prediction.diff.after.admin_state == 'up'
+          - sflow_prediction.diff.after.polling_interval == '20'
+          - sflow_after_check_mode.value == sflow_global_before
+
+    - name: Enable sFlow
+      community.sonic.sflow:
+        enabled: true
+        agent_id: eth0
+        polling_interval: 20
+        sample_direction: rx
+      diff: true
+      register: sflow_enable
+
+    - name: Enable sFlow again
+      community.sonic.sflow:
+        enabled: true
+        agent_id: eth0
+        polling_interval: 20
+        sample_direction: rx
+      register: sflow_enable_again
+
+    - name: Read the global entry
+      community.sonic.get_entry:
+        table: SFLOW
+        key: global
+      register: sflow_global
+
+    - name: Check that sFlow is enabled and the module is idempotent
+      ansible.builtin.assert:
+        that:
+          - sflow_enable is changed
+          - sflow_enable_again is not changed
+          - sflow_enable_again.diff.before == sflow_enable_again.diff.after
+          - sflow_global.value.admin_state == 'up'
+          - sflow_global.value.agent_id == 'eth0'
+          - sflow_global.value.polling_interval == '20'
+          - sflow_global.value.sample_direction == 'rx'
+
+    - name: Change only the polling interval
+      community.sonic.sflow:
+        polling_interval: 0
+      diff: true
+      register: sflow_polling
+
+    - name: Read the global entry
+      community.sonic.get_entry:
+        table: SFLOW
+        key: global
+      register: sflow_global
+
+    - name: Check that the other fields were left alone
+      ansible.builtin.assert:
+        that:
+          - sflow_polling is changed
+          - sflow_global.value.polling_interval == '0'
+          - sflow_global.value.admin_state == 'up'
+          - sflow_global.value.agent_id == 'eth0'
+          - sflow_global.value.sample_direction == 'rx'
+
+    - name: Clear the agent interface
+      community.sonic.sflow:
+        agent_id: ''
+      diff: true
+      register: sflow_clear_agent
+
+    - name: Read the global entry
+      community.sonic.get_entry:
+        table: SFLOW
+        key: global
+      register: sflow_global
+
+    - name: Check that the agent interface is gone
+      ansible.builtin.assert:
+        that:
+          - sflow_clear_agent is changed
+          - "'agent_id' not in sflow_global.value"
+          - sflow_global.value.admin_state == 'up'
+
+    - name: Reject an invalid polling interval
+      community.sonic.sflow:
+        polling_interval: 3
+      register: sflow_bad_interval
+      ignore_errors: true
+
+    - name: Reject an unknown agent interface
+      community.sonic.sflow:
+        agent_id: NoSuchPort99
+      register: sflow_bad_agent
+      ignore_errors: true
+
+    - name: Check the failure messages
+      ansible.builtin.assert:
+        that:
+          - sflow_bad_interval is failed
+          - "'polling_interval must be 0 or between 5 and 300' in sflow_bad_interval.msg"
+          - sflow_bad_agent is failed
+          - "'could not find interface \"NoSuchPort99\"' in sflow_bad_agent.msg"
+
+    - name: Show the global state
+      ansible.builtin.command: show sflow
+      changed_when: false
+      failed_when: false
+      register: show_sflow
+
+    - name: Output from show sflow
+      ansible.builtin.debug:
+        msg: '{{ show_sflow.stdout }}'
+
+    # --- sflow_collector -----------------------------------------------------
+
+    - name: Add a collector in check mode
+      community.sonic.sflow_collector:
+        name: ansible-test
+        address: 192.0.2.18
+      check_mode: true
+      diff: true
+      register: collector_prediction
+
+    - name: Read the collector after check mode
+      community.sonic.get_entry:
+        table: SFLOW_COLLECTOR
+        key: ansible-test
+      register: collector_after_check_mode
+
+    - name: Check that check mode did not write the collector
+      ansible.builtin.assert:
+        that:
+          - collector_prediction is changed
+          - collector_prediction.name == 'ansible-test'
+          - collector_prediction.diff.after.collector_ip == '192.0.2.18'
+          - collector_prediction.diff.after.collector_port == '6343'
+          - collector_prediction.diff.after.collector_vrf == 'default'
+          - collector_after_check_mode.value == {}
+
+    - name: Add a collector
+      community.sonic.sflow_collector:
+        name: ansible-test
+        address: 192.0.2.18
+      diff: true
+      register: collector_add
+
+    - name: Add the collector again
+      community.sonic.sflow_collector:
+        name: ansible-test
+        address: 192.0.2.18
+        port: 6343
+        vrf: default
+      register: collector_add_again
+
+    - name: Read the collector
+      community.sonic.get_entry:
+        table: SFLOW_COLLECTOR
+        key: ansible-test
+      register: collector
+
+    - name: Check that the collector was added and the module is idempotent
+      ansible.builtin.assert:
+        that:
+          - collector_add is changed
+          - collector_add_again is not changed
+          - collector.value.collector_ip == '192.0.2.18'
+          - collector.value.collector_port == '6343'
+          - collector.value.collector_vrf == 'default'
+
+    - name: Move the collector to the management VRF on another port
+      community.sonic.sflow_collector:
+        name: ansible-test
+        address: 2001:db8::18
+        port: 6344
+        vrf: mgmt
+      diff: true
+      register: collector_update
+
+    - name: Read the collector
+      community.sonic.get_entry:
+        table: SFLOW_COLLECTOR
+        key: ansible-test
+      register: collector
+
+    - name: Check that the collector was updated
+      ansible.builtin.assert:
+        that:
+          - collector_update is changed
+          - collector_update.diff.before.collector_ip == '192.0.2.18'
+          - collector.value.collector_ip == '2001:db8::18'
+          - collector.value.collector_port == '6344'
+          - collector.value.collector_vrf == 'mgmt'
+
+    - name: Reject an invalid collector address
+      community.sonic.sflow_collector:
+        name: ansible-bad
+        address: collector.example.com
+      register: collector_bad_address
+      ignore_errors: true
+
+    - name: Check the failure message
+      ansible.builtin.assert:
+        that:
+          - collector_bad_address is failed
+          - "'is not a valid IP address' in collector_bad_address.msg"
+
+    - name: Test the collector limit on a switch without other collectors
+      when: sflow_collectors_before | length == 0
+      block:
+        - name: Add a second collector
+          community.sonic.sflow_collector:
+            name: ansible-test2
+            address: 192.0.2.19
+          register: collector_second
+
+        - name: Add a third collector
+          community.sonic.sflow_collector:
+            name: ansible-test3
+            address: 192.0.2.20
+          register: collector_third
+          ignore_errors: true
+
+        - name: Check that only two collectors are allowed
+          ansible.builtin.assert:
+            that:
+              - collector_second is changed
+              - collector_third is failed
+              - "'only 2 sFlow collectors can be configured' in collector_third.msg"
+
+    - name: Show the collectors
+      ansible.builtin.command: show sflow
+      changed_when: false
+      failed_when: false
+      register: show_sflow
+
+    - name: Output from show sflow
+      ansible.builtin.debug:
+        msg: '{{ show_sflow.stdout }}'
+
+    - name: Remove the collector
+      community.sonic.sflow_collector:
+        name: ansible-test
+        state: absent
+      diff: true
+      register: collector_remove
+
+    - name: Remove the collector again
+      community.sonic.sflow_collector:
+        name: ansible-test
+        state: absent
+      register: collector_remove_again
+
+    - name: Read the collector
+      community.sonic.get_entry:
+        table: SFLOW_COLLECTOR
+        key: ansible-test
+      register: collector
+
+    - name: Check that the collector is gone
+      ansible.builtin.assert:
+        that:
+          - collector_remove is changed
+          - collector_remove.diff.after == {}
+          - collector_remove_again is not changed
+          - collector.value == {}
+
+    # --- sflow_session -------------------------------------------------------
+
+    - name: Disable sampling on Ethernet0 by alias in check mode
+      community.sonic.sflow_session:
+        interface: "{{ ethernet0.value.alias | default('Ethernet0') }}"
+        enabled: false
+      check_mode: true
+      diff: true
+      register: session_prediction
+
+    - name: Read the session after check mode
+      community.sonic.get_entry:
+        table: SFLOW_SESSION
+        key: Ethernet0
+      register: session_after_check_mode
+
+    - name: Check that check mode resolved the alias without writing
+      ansible.builtin.assert:
+        that:
+          - session_prediction is changed
+          - session_prediction.interface == 'Ethernet0'
+          - session_prediction.diff.after.admin_state == 'down'
+          - session_after_check_mode.value == (sflow_sessions_before.Ethernet0 | default({}))
+
+    - name: Disable sampling on Ethernet0 by alias
+      community.sonic.sflow_session:
+        interface: "{{ ethernet0.value.alias | default('Ethernet0') }}"
+        enabled: false
+      diff: true
+      register: session_disable
+
+    - name: Disable sampling on Ethernet0 again
+      community.sonic.sflow_session:
+        interface: Ethernet0
+        enabled: false
+      register: session_disable_again
+
+    - name: Read the session
+      community.sonic.get_entry:
+        table: SFLOW_SESSION
+        key: Ethernet0
+      register: session
+
+    - name: Check that the session was written and the module is idempotent
+      ansible.builtin.assert:
+        that:
+          - session_disable is changed
+          - session_disable.interface == 'Ethernet0'
+          - session_disable_again is not changed
+          - session.value.admin_state == 'down'
+
+    - name: Set the sample rate and direction, keeping the admin state
+      community.sonic.sflow_session:
+        interface: Ethernet0
+        sample_rate: 4096
+        sample_direction: both
+      diff: true
+      register: session_rate
+
+    - name: Read the session
+      community.sonic.get_entry:
+        table: SFLOW_SESSION
+        key: Ethernet0
+      register: session
+
+    - name: Check that only the given fields changed
+      ansible.builtin.assert:
+        that:
+          - session_rate is changed
+          - session.value.admin_state == 'down'
+          - session.value.sample_rate == '4096'
+          - session.value.sample_direction == 'both'
+
+    - name: Set the default sample rate for all ports
+      community.sonic.sflow_session:
+        interface: all
+        sample_rate: 8192
+      diff: true
+      register: session_all
+
+    - name: Read the all-ports session
+      community.sonic.get_entry:
+        table: SFLOW_SESSION
+        key: all
+      register: session_all_entry
+
+    - name: Check the all-ports entry
+      ansible.builtin.assert:
+        that:
+          - session_all is changed
+          - session_all.interface == 'all'
+          - session_all_entry.value.sample_rate == '8192'
+
+    - name: Reject an invalid sample rate
+      community.sonic.sflow_session:
+        interface: Ethernet0
+        sample_rate: 100
+      register: session_bad_rate
+      ignore_errors: true
+
+    - name: Reject an unknown port
+      community.sonic.sflow_session:
+        interface: NoSuchPort99
+        enabled: false
+      register: session_bad_port
+      ignore_errors: true
+
+    - name: Check the failure messages
+      ansible.builtin.assert:
+        that:
+          - session_bad_rate is failed
+          - "'sample_rate must be between 256 and 8388608' in session_bad_rate.msg"
+          - session_bad_port is failed
+          - "'could not find interface \"NoSuchPort99\"' in session_bad_port.msg"
+
+    - name: Show the interface sessions
+      ansible.builtin.command: show sflow interface
+      changed_when: false
+      failed_when: false
+      register: show_sflow_interface
+
+    - name: Output from show sflow interface
+      ansible.builtin.debug:
+        msg: '{{ show_sflow_interface.stdout }}'
+
+    - name: Remove the Ethernet0 session
+      community.sonic.sflow_session:
+        interface: Ethernet0
+        state: absent
+      diff: true
+      register: session_remove
+
+    - name: Remove the Ethernet0 session again
+      community.sonic.sflow_session:
+        interface: Ethernet0
+        state: absent
+      register: session_remove_again
+
+    - name: Read the session
+      community.sonic.get_entry:
+        table: SFLOW_SESSION
+        key: Ethernet0
+      register: session
+
+    - name: Check that the session is gone
+      ansible.builtin.assert:
+        that:
+          - session_remove is changed
+          - session_remove.diff.after == {}
+          - session_remove_again is not changed
+          - session.value == {}
+
+  always:
+    # --- cleanup and restore -------------------------------------------------
+
+    - name: Remove the test collectors
+      community.sonic.sflow_collector:
+        name: "{{ item }}"
+        state: absent
+      loop: [ansible-test, ansible-test2, ansible-test3, ansible-bad]
+
+    - name: Remove the test sessions
+      community.sonic.sflow_session:
+        interface: "{{ item }}"
+        state: absent
+      loop: [Ethernet0, all]
+
+    - name: Restore the previous sessions
+      community.sonic.sflow_session:
+        interface: "{{ item }}"
+        enabled: "{{ (sflow_sessions_before[item].admin_state == 'up') if 'admin_state' in sflow_sessions_before[item] else omit }}"
+        sample_rate: "{{ sflow_sessions_before[item].sample_rate | default(omit) }}"
+        sample_direction: "{{ sflow_sessions_before[item].sample_direction | default(omit) }}"
+      loop: [Ethernet0, all]
+      when:
+        - item in sflow_sessions_before
+        - sflow_sessions_before[item] | length > 0
+
+    - name: Remove the global sFlow entry
+      community.sonic.sflow:
+        state: absent
+
+    - name: Restore the previous global sFlow entry
+      community.sonic.sflow:
+        enabled: "{{ (sflow_global_before.admin_state == 'up') if 'admin_state' in sflow_global_before else omit }}"
+        agent_id: "{{ sflow_global_before.agent_id | default(omit) }}"
+        polling_interval: "{{ sflow_global_before.polling_interval | default(omit) }}"
+        sample_direction: "{{ sflow_global_before.sample_direction | default(omit) }}"
+      when: sflow_global_before | length > 0
+
+    - name: Read the state after cleanup
+      community.sonic.get_entry:
+        table: "{{ item }}"
+      loop: [SFLOW, SFLOW_COLLECTOR, SFLOW_SESSION]
+      register: sflow_after
+
+    - name: Check that the previous state was restored
+      ansible.builtin.assert:
+        that:
+          - (sflow_after.results[0].value.global | default({})) == sflow_global_before
+          - sflow_after.results[1].value == sflow_collectors_before
+          - (sflow_after.results[2].value.Ethernet0 | default({})) == (sflow_sessions_before.Ethernet0 | default({}))
+          - (sflow_after.results[2].value.all | default({})) == (sflow_sessions_before.all | default({}))
