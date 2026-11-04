@@ -1,0 +1,200 @@
+---
+# Uses Loopback1, which the virtual switch's default configuration does not
+# define (it only has Loopback0). Everything created here is removed again.
+- name: Loopback interface tests
+  block:
+    - name: Read the LOOPBACK_INTERFACE table
+      community.sonic.get_entry:
+        table: LOOPBACK_INTERFACE
+      register: lo_table
+
+    - name: Output the LOOPBACK_INTERFACE table
+      ansible.builtin.debug:
+        msg: '{{ lo_table.value }}'
+
+    - name: Check that Loopback1 is free for the test
+      ansible.builtin.assert:
+        that:
+          - "lo_table.value.keys() | select('match', '^Loopback1($|[|])') | list | length == 0"
+        fail_msg: Loopback1 already exists on the test device
+
+    - name: Add Loopback1 (check mode)
+      community.sonic.loopback:
+        name: Loopback1
+      check_mode: true
+      diff: true
+      register: check_add
+
+    - name: Check that check mode predicts the change without writing
+      ansible.builtin.assert:
+        that:
+          - check_add is changed
+          - check_add.interface == 'Loopback1'
+          - check_add.table == 'LOOPBACK_INTERFACE'
+          - "check_add.diff.before == {}"
+          - "check_add.diff.after == {'Loopback1': {}}"
+
+    - name: Read Loopback1 after check mode
+      community.sonic.get_entry:
+        table: LOOPBACK_INTERFACE
+      register: lo_table_after_check
+
+    - name: Check that check mode did not write
+      ansible.builtin.assert:
+        that:
+          - "'Loopback1' not in lo_table_after_check.value"
+
+    - name: Add Loopback1
+      community.sonic.loopback:
+        name: Loopback1
+      diff: true
+      register: add
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - add is changed
+          - add.interface == 'Loopback1'
+          - "add.addresses == []"
+          - "add.diff.before == {}"
+          - "add.diff.after == {'Loopback1': {}}"
+
+    - name: Add Loopback1 again
+      community.sonic.loopback:
+        name: Loopback1
+      register: add_again
+
+    - name: Check that the module is idempotent
+      ansible.builtin.assert:
+        that:
+          - add_again is not changed
+          - add_again.diff.before == add_again.diff.after
+
+    - name: Wait for the Loopback1 netdev to be created
+      ansible.builtin.command: ip -o link show Loopback1
+      changed_when: false
+      register: lo_link
+      retries: 15
+      delay: 2
+      until: lo_link.rc == 0
+
+    - name: Output the netdev
+      ansible.builtin.debug:
+        msg: '{{ lo_link.stdout }}'
+
+    - name: Add an address on Loopback1
+      community.sonic.interface_ip:
+        interface: Loopback1
+        address: 192.0.2.101/32
+      register: add_address
+
+    - name: Check that the existing parent entry was reused
+      ansible.builtin.assert:
+        that:
+          - add_address is changed
+          - not add_address.parent_created
+          - "add_address.addresses == ['192.0.2.101/32']"
+
+    - name: Wait for the address to show up
+      ansible.builtin.command: show ip interfaces
+      changed_when: false
+      register: show_ip
+      retries: 15
+      delay: 2
+      until: show_ip.stdout is search('192[.]0[.]2[.]101/32')
+
+    - name: Output from show ip interfaces
+      ansible.builtin.debug:
+        msg: '{{ show_ip.stdout }}'
+
+    - name: Remove Loopback1 (check mode)
+      community.sonic.loopback:
+        name: Loopback1
+        state: absent
+      check_mode: true
+      diff: true
+      register: check_remove
+
+    - name: Check that check mode reports the address removal too
+      ansible.builtin.assert:
+        that:
+          - check_remove is changed
+          - "check_remove.addresses == ['192.0.2.101/32']"
+          - "check_remove.diff.before == {'Loopback1': {}, 'Loopback1|192.0.2.101/32': {}}"
+          - "check_remove.diff.after == {}"
+
+    - name: Read the LOOPBACK_INTERFACE table after check mode removal
+      community.sonic.get_entry:
+        table: LOOPBACK_INTERFACE
+      register: lo_table_after_check_remove
+
+    - name: Check that check mode did not remove anything
+      ansible.builtin.assert:
+        that:
+          - "'Loopback1' in lo_table_after_check_remove.value"
+          - "'Loopback1|192.0.2.101/32' in lo_table_after_check_remove.value"
+
+    - name: Remove Loopback1
+      community.sonic.loopback:
+        name: Loopback1
+        state: absent
+      diff: true
+      register: remove
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - remove is changed
+          - "remove.addresses == ['192.0.2.101/32']"
+          - "remove.diff.before == {'Loopback1': {}, 'Loopback1|192.0.2.101/32': {}}"
+          - "remove.diff.after == {}"
+
+    - name: Read the LOOPBACK_INTERFACE table after removal
+      community.sonic.get_entry:
+        table: LOOPBACK_INTERFACE
+      register: lo_table_after_remove
+
+    - name: Check that the interface and its address are gone
+      ansible.builtin.assert:
+        that:
+          - "lo_table_after_remove.value.keys() | select('match', '^Loopback1($|[|])') | list | length == 0"
+
+    - name: Wait for the address to disappear
+      ansible.builtin.command: show ip interfaces
+      changed_when: false
+      register: show_ip_after
+      retries: 15
+      delay: 2
+      until: show_ip_after.stdout is not search('192[.]0[.]2[.]101/32')
+
+    - name: Remove Loopback1 again
+      community.sonic.loopback:
+        name: Loopback1
+        state: absent
+      register: remove_again
+
+    - name: Check that removal is idempotent
+      ansible.builtin.assert:
+        that:
+          - remove_again is not changed
+          - "remove_again.diff.before == {}"
+          - "remove_again.diff.after == {}"
+
+    - name: Reject an invalid loopback name
+      community.sonic.loopback:
+        name: Loopback1000
+      register: bad_name
+      ignore_errors: true
+
+    - name: Check the error message
+      ansible.builtin.assert:
+        that:
+          - bad_name is failed
+          - "'invalid loopback interface name' in bad_name.msg"
+
+  always:
+    - name: Clean up Loopback1
+      community.sonic.loopback:
+        name: Loopback1
+        state: absent
+      ignore_errors: true
