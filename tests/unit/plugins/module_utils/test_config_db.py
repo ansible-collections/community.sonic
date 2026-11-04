@@ -243,6 +243,67 @@ def test_writes_honour_check_mode(fake_swsscommon, check_mode):
         assert fake_swsscommon.get_table('VLAN') == {}
 
 
+def test_set_entry_replaces_in_one_transaction(fake_swsscommon):
+    """Removed fields are HDELed and new ones HSET in the same MULTI/EXEC, so watchers never see a mix."""
+    fake_swsscommon.seed({'ACL_RULE': {'T|R': {'PRIORITY': '5', 'DSCP': '46', 'PACKET_ACTION': 'DROP'}}})
+    db = connect(fake_swsscommon)
+    db.set_entry('ACL_RULE', ('T', 'R'), {'PRIORITY': '5', 'IP_PROTOCOL': '17', 'PACKET_ACTION': 'DROP'})
+    assert fake_swsscommon.get_entry('ACL_RULE', 'T|R') == {'PRIORITY': '5', 'IP_PROTOCOL': '17', 'PACKET_ACTION': 'DROP'}
+    assert fake_swsscommon.transactions == [('ACL_RULE', 'T|R', [
+        ('HSET', 'ACL_RULE|T|R', 'IP_PROTOCOL', '17'),
+        ('HSET', 'ACL_RULE|T|R', 'PACKET_ACTION', 'DROP'),
+        ('HSET', 'ACL_RULE|T|R', 'PRIORITY', '5'),
+        ('HDEL', 'ACL_RULE|T|R', 'DSCP'),
+    ])]
+    assert fake_swsscommon.writes == [('set_entry', 'ACL_RULE', 'T|R',
+                                       {'PRIORITY': '5', 'IP_PROTOCOL': '17', 'PACKET_ACTION': 'DROP'})]
+
+
+def test_set_entry_transaction_handles_lists_and_empty_entries(fake_swsscommon):
+    fake_swsscommon.seed({'PORTCHANNEL_MEMBER': {'PortChannel1|Ethernet0': {}}})
+    db = connect(fake_swsscommon)
+    db.set_entry('VLAN', 'Vlan42', {'vlanid': '42', 'dhcp_servers': ['10.0.0.1', '10.0.0.2']})
+    assert fake_swsscommon.get_entry('VLAN', 'Vlan42') == {'vlanid': '42', 'dhcp_servers': ['10.0.0.1', '10.0.0.2']}
+    assert fake_swsscommon.transactions[-1][2] == [
+        ('HSET', 'VLAN|Vlan42', 'dhcp_servers@', '10.0.0.1,10.0.0.2'),
+        ('HSET', 'VLAN|Vlan42', 'vlanid', '42'),
+    ]
+    # An empty entry is stored as NULL:NULL and the placeholder goes away when real fields arrive.
+    db.set_entry('PORTCHANNEL_MEMBER', 'PortChannel1|Ethernet0', {'x': '1'})
+    assert fake_swsscommon.transactions[-1][2] == [
+        ('HSET', 'PORTCHANNEL_MEMBER|PortChannel1|Ethernet0', 'x', '1'),
+        ('HDEL', 'PORTCHANNEL_MEMBER|PortChannel1|Ethernet0', 'NULL'),
+    ]
+    db.set_entry('PORTCHANNEL_MEMBER', 'PortChannel1|Ethernet0', {})
+    assert fake_swsscommon.transactions[-1][2] == [
+        ('HSET', 'PORTCHANNEL_MEMBER|PortChannel1|Ethernet0', 'NULL', 'NULL'),
+        ('HDEL', 'PORTCHANNEL_MEMBER|PortChannel1|Ethernet0', 'x'),
+    ]
+    assert fake_swsscommon.has_entry('PORTCHANNEL_MEMBER', 'PortChannel1|Ethernet0')
+    assert fake_swsscommon.get_entry('PORTCHANNEL_MEMBER', 'PortChannel1|Ethernet0') == {}
+
+
+def test_set_entry_delete_and_fallback_use_the_connector(fake_swsscommon, monkeypatch):
+    fake_swsscommon.seed({'VLAN': {'Vlan42': {'vlanid': '42'}}})
+    db = connect(fake_swsscommon)
+    db.set_entry('VLAN', 'Vlan42', None)
+    assert fake_swsscommon.writes == [('set_entry', 'VLAN', 'Vlan42', None)]
+    assert fake_swsscommon.transactions == []
+    # Bindings without RedisTransactioner fall back to the connector's own set_entry.
+    monkeypatch.delattr(type(fake_swsscommon), 'RedisTransactioner')
+    db.set_entry('VLAN', 'Vlan43', {'vlanid': '43'})
+    assert fake_swsscommon.writes[-1] == ('set_entry', 'VLAN', 'Vlan43', {'vlanid': '43'})
+    assert fake_swsscommon.transactions == []
+    assert fake_swsscommon.get_entry('VLAN', 'Vlan43') == {'vlanid': '43'}
+
+
+def test_set_entry_failed_transaction_raises(fake_swsscommon, monkeypatch):
+    db = connect(fake_swsscommon)
+    monkeypatch.setattr(fake_swsscommon.RedisTransactioner, '_exec', lambda self: False)
+    with pytest.raises(config_db.ConfigDBError, match='transaction replacing VLAN Vlan1'):
+        db.set_entry('VLAN', 'Vlan1', {'vlanid': '1'})
+
+
 def test_ensure_entry_exclusive_create(fake_swsscommon):
     db = connect(fake_swsscommon)
     change = db.ensure_entry('VLAN', 'Vlan42', {'vlanid': 42, 'dhcp_servers': ['10.0.0.1']})
