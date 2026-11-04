@@ -1,0 +1,404 @@
+---
+# SONiC supports a single VTEP. The tests only run when the virtual switch has
+# no VXLAN tunnel yet; everything created here (VLAN, tunnel, NVO and map) is
+# removed again in the always block.
+
+- name: Record the VXLAN tables before the test
+  community.sonic.get_entry:
+    table: "{{ item }}"
+  loop: [VXLAN_TUNNEL, VXLAN_EVPN_NVO, VXLAN_TUNNEL_MAP]
+  register: vxlan_before
+
+- name: Remember the previous entries
+  ansible.builtin.set_fact:
+    vxlan_tunnels_before: "{{ vxlan_before.results[0].value }}"
+    vxlan_nvos_before: "{{ vxlan_before.results[1].value }}"
+    vxlan_maps_before: "{{ vxlan_before.results[2].value }}"
+
+- name: Show the previous state
+  ansible.builtin.debug:
+    msg:
+      tunnels: "{{ vxlan_tunnels_before }}"
+      nvos: "{{ vxlan_nvos_before }}"
+      maps: "{{ vxlan_maps_before }}"
+
+- name: Skip the test when a VTEP already exists
+  ansible.builtin.debug:
+    msg: "A VTEP already exists on this device ({{ vxlan_tunnels_before | list | join(', ') }}); skipping the VXLAN tests"
+  when: vxlan_tunnels_before | length > 0
+
+- name: Run the VXLAN tests
+  when: vxlan_tunnels_before | length == 0
+  block:
+    # --- vxlan_tunnel --------------------------------------------------------
+
+    - name: Predict creating the VTEP and NVO
+      community.sonic.vxlan_tunnel:
+        name: vtep
+        source_ip: 192.0.2.100
+        evpn_nvo: nvo
+      check_mode: true
+      diff: true
+      register: vtep_prediction
+
+    - name: Read the tunnel table after check mode
+      community.sonic.get_entry:
+        table: VXLAN_TUNNEL
+      register: vtep_after_check_mode
+
+    - name: Check that check mode predicted the change without writing
+      ansible.builtin.assert:
+        that:
+          - vtep_prediction is changed
+          - vtep_prediction.name == 'vtep'
+          - vtep_prediction.source_ip == '192.0.2.100'
+          - vtep_prediction.evpn_nvo == 'nvo'
+          - "vtep_prediction.diff.before.VXLAN_TUNNEL == {}"
+          - vtep_prediction.diff.after.VXLAN_TUNNEL.vtep.src_ip == '192.0.2.100'
+          - vtep_prediction.diff.after.VXLAN_EVPN_NVO.nvo.source_vtep == 'vtep'
+          - "vtep_after_check_mode.value == {}"
+
+    - name: Create the VTEP and NVO
+      community.sonic.vxlan_tunnel:
+        name: vtep
+        source_ip: 192.0.2.100
+        evpn_nvo: nvo
+      diff: true
+      register: vtep_create
+
+    - name: Create the VTEP and NVO again
+      community.sonic.vxlan_tunnel:
+        name: vtep
+        source_ip: 192.0.2.100
+        evpn_nvo: nvo
+      register: vtep_create_again
+
+    - name: Read the tunnel and NVO entries
+      community.sonic.get_entry:
+        table: "{{ item.table }}"
+        key: "{{ item.key }}"
+      loop:
+        - {table: VXLAN_TUNNEL, key: vtep}
+        - {table: VXLAN_EVPN_NVO, key: nvo}
+      register: vtep_entries
+
+    - name: Check that the VTEP and NVO exist and the module is idempotent
+      ansible.builtin.assert:
+        that:
+          - vtep_create is changed
+          - vtep_create_again is not changed
+          - vtep_create_again.diff.before == vtep_create_again.diff.after
+          - "vtep_entries.results[0].value == {'src_ip': '192.0.2.100'}"
+          - "vtep_entries.results[1].value == {'source_vtep': 'vtep'}"
+
+    - name: Refuse a second VTEP
+      community.sonic.vxlan_tunnel:
+        name: vtep2
+        source_ip: 192.0.2.101
+      register: vtep_second
+      ignore_errors: true
+
+    - name: Refuse a second NVO
+      community.sonic.vxlan_tunnel:
+        name: vtep
+        source_ip: 192.0.2.100
+        evpn_nvo: nvo2
+      register: nvo_second
+      ignore_errors: true
+
+    - name: Check the single VTEP and NVO rules
+      ansible.builtin.assert:
+        that:
+          - vtep_second is failed
+          - "'SONiC supports a single VTEP and tunnel \"vtep\" (src_ip 192.0.2.100) is already configured' in vtep_second.msg"
+          - nvo_second is failed
+          - "'SONiC supports a single EVPN NVO and \"nvo\" (source_vtep vtep) is already configured' in nvo_second.msg"
+
+    - name: Show the tunnel
+      ansible.builtin.command: show vxlan tunnel
+      changed_when: false
+      register: show_vxlan_tunnel
+
+    - name: Output from show vxlan tunnel
+      ansible.builtin.debug:
+        msg: "{{ show_vxlan_tunnel.stdout }}"
+
+    - name: Check that the tunnel is shown
+      ansible.builtin.assert:
+        that:
+          - show_vxlan_tunnel.stdout is search('(?m)^.*\\bvtep\\b.*192[.]0[.]2[.]100.*$')
+
+    # --- vxlan_map -----------------------------------------------------------
+
+    - name: Refuse a map for a VLAN that does not exist
+      community.sonic.vxlan_map:
+        tunnel: vtep
+        vlan: 3100
+        vni: 13100
+      register: map_no_vlan
+      ignore_errors: true
+
+    - name: Check the failure message
+      ansible.builtin.assert:
+        that:
+          - map_no_vlan is failed
+          - "'Vlan3100 does not exist' in map_no_vlan.msg"
+
+    - name: Create Vlan3100
+      community.sonic.vlan:
+        vlanid: 3100
+
+    - name: Predict mapping Vlan3100 to VNI 13100
+      community.sonic.vxlan_map:
+        tunnel: vtep
+        vlan: 3100
+        vni: 13100
+      check_mode: true
+      diff: true
+      register: map_prediction
+
+    - name: Read the map table after check mode
+      community.sonic.get_entry:
+        table: VXLAN_TUNNEL_MAP
+      register: map_after_check_mode
+
+    - name: Check that check mode predicted the map without writing
+      ansible.builtin.assert:
+        that:
+          - map_prediction is changed
+          - map_prediction.key == 'vtep|map_13100_Vlan3100'
+          - map_prediction.interface == 'Vlan3100'
+          - map_prediction.vni == 13100
+          - "map_prediction.diff == {'before': {}, 'after': {'vlan': 'Vlan3100', 'vni': '13100'}}"
+          - "map_after_check_mode.value == {}"
+
+    - name: Map Vlan3100 to VNI 13100
+      community.sonic.vxlan_map:
+        tunnel: vtep
+        vlan: 3100
+        vni: 13100
+      diff: true
+      register: map_create
+
+    - name: Map Vlan3100 to VNI 13100 again
+      community.sonic.vxlan_map:
+        tunnel: vtep
+        vlan: 3100
+        vni: 13100
+      register: map_create_again
+
+    - name: Read the map entry
+      community.sonic.get_entry:
+        table: VXLAN_TUNNEL_MAP
+        key: vtep|map_13100_Vlan3100
+      register: map_entry
+
+    - name: Check that the map exists and the module is idempotent
+      ansible.builtin.assert:
+        that:
+          - map_create is changed
+          - map_create_again is not changed
+          - map_create_again.diff.before == map_create_again.diff.after
+          - "map_entry.value == {'vlan': 'Vlan3100', 'vni': '13100'}"
+
+    - name: Show the VLAN-to-VNI maps
+      ansible.builtin.command: show vxlan vlanvnimap
+      changed_when: false
+      register: show_vlanvnimap
+
+    - name: Output from show vxlan vlanvnimap
+      ansible.builtin.debug:
+        msg: "{{ show_vlanvnimap.stdout }}"
+
+    - name: Check that the map is shown
+      ansible.builtin.assert:
+        that:
+          - show_vlanvnimap.stdout is search('(?m)^.*\\bVlan3100\\b.*\\b13100\\b.*$')
+
+    - name: Reject an invalid VNI
+      community.sonic.vxlan_map:
+        tunnel: vtep
+        vlan: 3100
+        vni: 16777216
+      register: map_bad_vni
+      ignore_errors: true
+
+    - name: Check the failure message
+      ansible.builtin.assert:
+        that:
+          - map_bad_vni is failed
+          - "'vni must be between 1 and 16777215' in map_bad_vni.msg"
+
+    - name: Change the VNI of Vlan3100
+      community.sonic.vxlan_map:
+        tunnel: vtep
+        vlan: 3100
+        vni: 13101
+      diff: true
+      register: map_change
+
+    - name: Read the map table
+      community.sonic.get_entry:
+        table: VXLAN_TUNNEL_MAP
+      register: map_table
+
+    - name: Check that the old map was replaced
+      ansible.builtin.assert:
+        that:
+          - map_change is changed
+          - map_change.key == 'vtep|map_13101_Vlan3100'
+          - map_change.diff.before.vni == '13100'
+          - map_change.diff.after.vni == '13101'
+          - "map_table.value == {'vtep|map_13101_Vlan3100': {'vlan': 'Vlan3100', 'vni': '13101'}}"
+
+    - name: Map Vlan3100 back to VNI 13100
+      community.sonic.vxlan_map:
+        tunnel: vtep
+        vlan: 3100
+        vni: 13100
+
+    # --- removal order -------------------------------------------------------
+
+    - name: Refuse to remove the tunnel while the map exists
+      community.sonic.vxlan_tunnel:
+        name: vtep
+        state: absent
+      register: vtep_remove_refused
+      ignore_errors: true
+
+    - name: Read the tunnel entry
+      community.sonic.get_entry:
+        table: VXLAN_TUNNEL
+        key: vtep
+      register: vtep_entry
+
+    - name: Check that the tunnel was kept
+      ansible.builtin.assert:
+        that:
+          - vtep_remove_refused is failed
+          - "'still has 1 VLAN-to-VNI map(s): vtep|map_13100_Vlan3100' in vtep_remove_refused.msg"
+          - "vtep_entry.value == {'src_ip': '192.0.2.100'}"
+
+    - name: Predict removing the tunnel with force
+      community.sonic.vxlan_tunnel:
+        name: vtep
+        state: absent
+        force: true
+      check_mode: true
+      diff: true
+      register: vtep_force_prediction
+
+    - name: Read the map table after check mode
+      community.sonic.get_entry:
+        table: VXLAN_TUNNEL_MAP
+      register: map_after_force_check_mode
+
+    - name: Check that check mode predicted the cascade without writing
+      ansible.builtin.assert:
+        that:
+          - vtep_force_prediction is changed
+          - vtep_force_prediction.removed_maps == ['vtep|map_13100_Vlan3100']
+          - "vtep_force_prediction.diff.after == {'VXLAN_TUNNEL': {}, 'VXLAN_EVPN_NVO': {}, 'VXLAN_TUNNEL_MAP': {}}"
+          - "map_after_force_check_mode.value == {'vtep|map_13100_Vlan3100': {'vlan': 'Vlan3100', 'vni': '13100'}}"
+
+    - name: Predict removing the map
+      community.sonic.vxlan_map:
+        tunnel: vtep
+        vlan: 3100
+        state: absent
+      check_mode: true
+      diff: true
+      register: map_remove_prediction
+
+    - name: Remove the map
+      community.sonic.vxlan_map:
+        tunnel: vtep
+        vlan: 3100
+        state: absent
+      diff: true
+      register: map_remove
+
+    - name: Remove the map again
+      community.sonic.vxlan_map:
+        tunnel: vtep
+        vlan: 3100
+        state: absent
+      register: map_remove_again
+
+    - name: Read the map table
+      community.sonic.get_entry:
+        table: VXLAN_TUNNEL_MAP
+      register: map_table
+
+    - name: Check that the map is gone
+      ansible.builtin.assert:
+        that:
+          - map_remove_prediction is changed
+          - "map_remove_prediction.diff == {'before': {'vlan': 'Vlan3100', 'vni': '13100'}, 'after': {}}"
+          - map_remove is changed
+          - map_remove.key == 'vtep|map_13100_Vlan3100'
+          - map_remove_again is not changed
+          - "map_table.value == {}"
+
+    - name: Remove the tunnel
+      community.sonic.vxlan_tunnel:
+        name: vtep
+        state: absent
+      diff: true
+      register: vtep_remove
+
+    - name: Remove the tunnel again
+      community.sonic.vxlan_tunnel:
+        name: vtep
+        state: absent
+      register: vtep_remove_again
+
+    - name: Read the tunnel and NVO tables
+      community.sonic.get_entry:
+        table: "{{ item }}"
+      loop: [VXLAN_TUNNEL, VXLAN_EVPN_NVO]
+      register: vxlan_after_remove
+
+    - name: Check that the tunnel and its NVO are gone
+      ansible.builtin.assert:
+        that:
+          - vtep_remove is changed
+          - vtep_remove.removed_maps == []
+          - "vtep_remove.diff.before.VXLAN_EVPN_NVO == {'nvo': {'source_vtep': 'vtep'}}"
+          - "vtep_remove.diff.after == {'VXLAN_TUNNEL': {}, 'VXLAN_EVPN_NVO': {}, 'VXLAN_TUNNEL_MAP': {}}"
+          - vtep_remove_again is not changed
+          - "vxlan_after_remove.results[0].value == {}"
+          - "vxlan_after_remove.results[1].value == {}"
+
+  always:
+    # --- cleanup -------------------------------------------------------------
+
+    - name: Remove the test map
+      community.sonic.vxlan_map:
+        tunnel: vtep
+        vlan: 3100
+        state: absent
+
+    - name: Remove the test tunnel and NVO
+      community.sonic.vxlan_tunnel:
+        name: vtep
+        state: absent
+        force: true
+
+    - name: Remove Vlan3100
+      community.sonic.vlan:
+        vlanid: 3100
+        state: absent
+
+    - name: Read the VXLAN tables after cleanup
+      community.sonic.get_entry:
+        table: "{{ item }}"
+      loop: [VXLAN_TUNNEL, VXLAN_EVPN_NVO, VXLAN_TUNNEL_MAP]
+      register: vxlan_after
+
+    - name: Check that the previous state was restored
+      ansible.builtin.assert:
+        that:
+          - vxlan_after.results[0].value == vxlan_tunnels_before
+          - vxlan_after.results[1].value == vxlan_nvos_before
+          - vxlan_after.results[2].value == vxlan_maps_before
