@@ -1,0 +1,337 @@
+---
+# The virtual switch is platform x86_64-kvm_x86_64-r0 with HWSKU Force10-S6000.
+# The module only edits the saved configuration and sonic-environment, so the
+# running system is not affected and the VM is never rebooted. Both files are
+# backed up first and restored byte for byte in the `always` block, together
+# with the HWSKU directories created here.
+- name: Run the hwsku tests as root
+  become: true
+  vars:
+    ansible_become_password: "{{ ansible_ssh_pass }}"
+    backup_dir: /tmp/hwsku-integration
+    test_sku: Test-SKU
+  block:
+    - name: Create the backup directory
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Back up the saved configuration and sonic-environment
+      ansible.builtin.command: cp -p {{ item }} {{ backup_dir }}/
+      changed_when: true
+      loop:
+        - /etc/sonic/config_db.json
+        - /etc/sonic/sonic-environment
+
+    - name: Read the current HWSKU
+      ansible.builtin.command: sonic-cfggen -d -v DEVICE_METADATA.localhost.hwsku
+      changed_when: false
+      register: running_hwsku
+
+    - name: Remember the current HWSKU
+      ansible.builtin.set_fact:
+        current_hwsku: "{{ running_hwsku.stdout | trim }}"
+
+    - name: Check this is the virtual switch we expect
+      ansible.builtin.assert:
+        that:
+          - current_hwsku == 'Force10-S6000'
+        fail_msg: "unexpected running HWSKU {{ current_hwsku }}"
+
+    # -- read-only use ------------------------------------------------------------
+
+    - name: Query the current HWSKU without root
+      community.sonic.hwsku:
+        name: "{{ current_hwsku }}"
+      become: false
+      ignore_errors: true
+      register: no_root
+
+    - name: Check that running without root fails clearly
+      ansible.builtin.assert:
+        that:
+          - no_root is failed
+          - "'needs root' in no_root.msg"
+          - "'become: true' in no_root.msg"
+
+    - name: Query the current HWSKU
+      community.sonic.hwsku:
+        name: "{{ current_hwsku }}"
+      diff: true
+      register: query
+
+    - name: Check that the read-only run reports the platform and HWSKU without a change
+      ansible.builtin.assert:
+        that:
+          - query is not changed
+          - query.platform == 'x86_64-kvm_x86_64-r0'
+          - query.hwsku == current_hwsku
+          - query.previous_hwsku == current_hwsku
+          - query.running_hwsku == current_hwsku
+          - query.hwsku_dir == '/usr/share/sonic/device/x86_64-kvm_x86_64-r0/' ~ current_hwsku
+          - not query.reboot_required
+          - not query.ports_regenerated
+          - query.diff.before == query.diff.after
+
+    - name: Set the platform directory
+      ansible.builtin.set_fact:
+        platform_dir: "/usr/share/sonic/device/{{ query.platform }}"
+
+    # -- switch to another built-in HWSKU ---------------------------------------------
+
+    - name: List the built-in HWSKUs with a port_config.ini
+      ansible.builtin.find:
+        paths: "{{ platform_dir }}"
+        patterns: port_config.ini
+        recurse: true
+        depth: 2
+      register: port_configs
+
+    - name: Pick another built-in HWSKU
+      ansible.builtin.set_fact:
+        builtin_skus: "{{ port_configs.files | map(attribute='path') | map('dirname') | map('basename') | reject('equalto', current_hwsku) | sort }}"
+
+    - name: Prefer a well known HWSKU
+      ansible.builtin.set_fact:
+        other_hwsku: "{{ (['Force10-S6100', 'Arista-7050-QX32'] | intersect(builtin_skus) + builtin_skus) | first }}"
+
+    - name: Show the HWSKUs
+      ansible.builtin.debug:
+        msg: "built-in HWSKUs: {{ builtin_skus | join(', ') }}; switching to {{ other_hwsku }}"
+
+    - name: Check that another HWSKU is available
+      ansible.builtin.assert:
+        that:
+          - other_hwsku | length > 0
+          - other_hwsku != current_hwsku
+
+    - name: Read the saved configuration
+      ansible.builtin.slurp:
+        path: /etc/sonic/config_db.json
+      register: config_before
+
+    - name: Switch the HWSKU in check mode
+      community.sonic.hwsku:
+        name: "{{ other_hwsku }}"
+      check_mode: true
+      diff: true
+      register: switch_check
+
+    - name: Read the files after the check mode run
+      ansible.builtin.slurp:
+        path: "{{ item }}"
+      loop:
+        - /etc/sonic/config_db.json
+        - /etc/sonic/sonic-environment
+      register: after_check
+
+    - name: Check mode predicts the switch without writing
+      ansible.builtin.assert:
+        that:
+          - switch_check is changed
+          - switch_check.reboot_required
+          - switch_check.ports_regenerated
+          - switch_check.hwsku == other_hwsku
+          - switch_check.previous_hwsku == current_hwsku
+          - switch_check.running_hwsku == current_hwsku
+          - switch_check.diff.before.hwsku == current_hwsku
+          - switch_check.diff.after.hwsku == other_hwsku
+          - switch_check.diff.after.environment_hwsku == other_hwsku
+          - switch_check.diff.after.PORT | length > 0
+          - after_check.results[0].content == config_before.content
+          - after_check.results[1].content | b64decode is search('(?m)^HWSKU=' ~ current_hwsku ~ '$')
+
+    - name: Switch the HWSKU
+      community.sonic.hwsku:
+        name: "{{ other_hwsku }}"
+        backup: true
+      diff: true
+      register: switch
+
+    - name: Read the saved HWSKU
+      ansible.builtin.command: sonic-cfggen -j /etc/sonic/config_db.json -v DEVICE_METADATA.localhost.hwsku
+      changed_when: false
+      register: saved_hwsku
+
+    - name: Read the saved configuration as JSON
+      ansible.builtin.command: sonic-cfggen -j /etc/sonic/config_db.json --print-data
+      changed_when: false
+      register: saved_config
+
+    - name: Build the PORT table sonic-cfggen generates for the new HWSKU
+      ansible.builtin.command: >-
+        sonic-cfggen -H -k {{ other_hwsku }} -p {{ platform_dir }}/{{ other_hwsku }}/port_config.ini --print-data
+      changed_when: false
+      register: generated
+
+    - name: Read sonic-environment
+      ansible.builtin.slurp:
+        path: /etc/sonic/sonic-environment
+      register: environment_after
+
+    - name: Check the saved configuration and sonic-environment were switched
+      ansible.builtin.assert:
+        that:
+          - switch is changed
+          - switch.reboot_required
+          - switch.ports_regenerated
+          - switch.hwsku == other_hwsku
+          - switch.diff == switch_check.diff
+          - switch.backup_file is defined
+          - saved_hwsku.stdout | trim == other_hwsku
+          - environment_after.content | b64decode is search('(?m)^HWSKU=' ~ other_hwsku ~ '$')
+          - environment_after.content | b64decode is not search('(?m)^HWSKU=' ~ current_hwsku ~ '$')
+          - (saved_config.stdout | from_json).PORT.keys() | sort == (generated.stdout | from_json).PORT.keys() | sort
+          - switch.diff.after.PORT.keys() | sort == (generated.stdout | from_json).PORT.keys() | sort
+
+    - name: Check that the ports of the new HWSKU carry the lanes of its port_config.ini
+      ansible.builtin.assert:
+        that:
+          - switch.diff.after.PORT[item].lanes == (generated.stdout | from_json).PORT[item].lanes
+          - switch.diff.after.PORT[item].alias == (generated.stdout | from_json).PORT[item].alias
+      loop: "{{ switch.diff.after.PORT.keys() | sort }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Check that the running configuration was not touched
+      ansible.builtin.command: sonic-cfggen -d -v DEVICE_METADATA.localhost.hwsku
+      changed_when: false
+      register: still_running
+      failed_when: still_running.stdout | trim != current_hwsku
+
+    - name: Check that the backup holds the original saved configuration
+      ansible.builtin.command: cmp {{ switch.backup_file }} {{ backup_dir }}/config_db.json
+      changed_when: false
+
+    - name: Switch the HWSKU again
+      community.sonic.hwsku:
+        name: "{{ other_hwsku }}"
+      diff: true
+      register: switch_again
+
+    - name: Check the switch is idempotent but the reboot is still pending
+      ansible.builtin.assert:
+        that:
+          - switch_again is not changed
+          - switch_again.reboot_required
+          - switch_again.previous_hwsku == other_hwsku
+          - switch_again.running_hwsku == current_hwsku
+          - switch_again.diff.before == switch_again.diff.after
+
+    - name: Switch back to the original HWSKU
+      community.sonic.hwsku:
+        name: "{{ current_hwsku }}"
+      diff: true
+      register: switch_back
+
+    - name: Read the saved HWSKU
+      ansible.builtin.command: sonic-cfggen -j /etc/sonic/config_db.json -v DEVICE_METADATA.localhost.hwsku
+      changed_when: false
+      register: saved_hwsku_back
+
+    - name: Check the switch back
+      ansible.builtin.assert:
+        that:
+          - switch_back is changed
+          - switch_back.reboot_required  # the saved PORT table was regenerated
+          - switch_back.hwsku == current_hwsku
+          - saved_hwsku_back.stdout | trim == current_hwsku
+          - switch_back.diff.after.PORT.keys() | sort == (config_before.content | b64decode | from_json).PORT.keys() | sort
+
+    # -- install a custom HWSKU from src ----------------------------------------------
+
+    - name: Stage a copy of the current HWSKU as a custom HWSKU
+      ansible.builtin.command: cp -r {{ platform_dir }}/{{ current_hwsku }} {{ backup_dir }}/{{ test_sku }}
+      changed_when: true
+
+    - name: Make the staged copy differ in mode and ownership only
+      ansible.builtin.file:
+        path: "{{ backup_dir }}/{{ test_sku }}/port_config.ini"
+        mode: "0600"
+        owner: admin
+
+    - name: Install the custom HWSKU in check mode
+      community.sonic.hwsku:
+        name: "{{ test_sku }}"
+        src: "{{ backup_dir }}/{{ test_sku }}"
+      check_mode: true
+      diff: true
+      register: install_check
+
+    - name: Check mode predicts the installation without writing
+      ansible.builtin.assert:
+        that:
+          - install_check is changed
+          - install_check.reboot_required
+          - install_check.hwsku == test_sku
+          - install_check.hwsku_dir == platform_dir ~ '/' ~ test_sku
+          - install_check.diff.before.files == {}
+          - "'port_config.ini' in install_check.diff.after.files"
+
+    - name: Check that the HWSKU directory does not exist yet
+      ansible.builtin.stat:
+        path: "{{ platform_dir }}/{{ test_sku }}"
+      register: not_installed
+      failed_when: not_installed.stat.exists
+
+    - name: Install the custom HWSKU
+      community.sonic.hwsku:
+        name: "{{ test_sku }}"
+        src: "{{ backup_dir }}/{{ test_sku }}"
+      diff: true
+      register: install
+
+    - name: Compare the installed directory with the source
+      ansible.builtin.command: diff -r {{ backup_dir }}/{{ test_sku }} {{ platform_dir }}/{{ test_sku }}
+      changed_when: false
+
+    - name: Read the saved HWSKU
+      ansible.builtin.command: sonic-cfggen -j /etc/sonic/config_db.json -v DEVICE_METADATA.localhost.hwsku
+      changed_when: false
+      register: saved_test_sku
+
+    - name: Check the installation
+      ansible.builtin.assert:
+        that:
+          - install is changed
+          - install.reboot_required
+          - install.diff == install_check.diff
+          - saved_test_sku.stdout | trim == test_sku
+
+    - name: Install the custom HWSKU again
+      community.sonic.hwsku:
+        name: "{{ test_sku }}"
+        src: "{{ backup_dir }}/{{ test_sku }}"
+      diff: true
+      register: install_again
+
+    - name: Check that the installation is idempotent although modes differ
+      ansible.builtin.assert:
+        that:
+          - install_again is not changed
+          - install_again.diff.before == install_again.diff.after
+
+  always:
+    - name: Restore the saved configuration and sonic-environment
+      ansible.builtin.command: cp -p {{ backup_dir }}/{{ item }} /etc/sonic/{{ item }}
+      changed_when: true
+      loop:
+        - config_db.json
+        - sonic-environment
+
+    - name: Remove the custom HWSKU and the module's backup files
+      ansible.builtin.shell: rm -rf /usr/share/sonic/device/x86_64-kvm_x86_64-r0/{{ test_sku }} /etc/sonic/config_db.json.*~
+      changed_when: true
+
+    - name: Check that both files are restored byte for byte
+      ansible.builtin.command: cmp {{ backup_dir }}/{{ item }} /etc/sonic/{{ item }}
+      changed_when: false
+      loop:
+        - config_db.json
+        - sonic-environment
+
+    - name: Remove the backup directory
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: absent
