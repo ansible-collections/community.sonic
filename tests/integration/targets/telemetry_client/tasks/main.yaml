@@ -1,0 +1,280 @@
+---
+# The dial-out client in the gnmi container watches TELEMETRY_CLIENT and
+# applies changes live, so the test only needs CONFIG_DB; delivering data to a
+# collector is out of scope. The table is restored field by field at the end.
+- name: Record the TELEMETRY_CLIENT table before the test
+  community.sonic.get_entry:
+    table: TELEMETRY_CLIENT
+  register: telemetry_client_before
+
+- name: Show the previous state
+  ansible.builtin.debug:
+    msg: "{{ telemetry_client_before.value }}"
+
+- name: Run the dial-out client tests
+  block:
+    - name: Predict configuring dial-out telemetry
+      community.sonic.telemetry_client:
+        encoding: JSON_IETF
+        retry_interval: 30
+        unidirectional: true
+        destination_groups:
+          - name: collectors
+            collectors:
+              - "[2001:db8::20]:8080"
+              - "[2001:db8::21]:8080"
+        subscriptions:
+          - name: port_counters
+            destination_group: collectors
+            path_target: COUNTERS_DB
+            paths: ["COUNTERS/Ethernet*"]
+            report_type: periodic
+            report_interval: 10000
+      check_mode: true
+      diff: true
+      register: dialout_prediction
+
+    - name: Read the table after check mode
+      community.sonic.get_entry:
+        table: TELEMETRY_CLIENT
+      register: dialout_after_check_mode
+
+    - name: Check that check mode predicted the change without writing
+      ansible.builtin.assert:
+        that:
+          - dialout_prediction is changed
+          - dialout_prediction.destination_groups == ['collectors']
+          - dialout_prediction.subscriptions == ['port_counters']
+          - dialout_prediction.diff.before == telemetry_client_before.value
+          - dialout_prediction.diff.after.Global.retry_interval == '30'
+          - dialout_prediction.diff.after.DestinationGroup_collectors.dst_addr == '[2001:db8::20]:8080,[2001:db8::21]:8080'
+          - dialout_after_check_mode.value == telemetry_client_before.value
+
+    - name: Configure dial-out telemetry
+      community.sonic.telemetry_client:
+        encoding: JSON_IETF
+        retry_interval: 30
+        unidirectional: true
+        destination_groups:
+          - name: collectors
+            collectors:
+              - "[2001:db8::20]:8080"
+              - "[2001:db8::21]:8080"
+        subscriptions:
+          - name: port_counters
+            destination_group: collectors
+            path_target: COUNTERS_DB
+            paths: ["COUNTERS/Ethernet*"]
+            report_type: periodic
+            report_interval: 10000
+      diff: true
+      register: dialout_create
+
+    - name: Configure dial-out telemetry again
+      community.sonic.telemetry_client:
+        encoding: JSON_IETF
+        retry_interval: 30
+        unidirectional: true
+        destination_groups:
+          - name: collectors
+            collectors:
+              - "[2001:db8::20]:8080"
+              - "[2001:db8::21]:8080"
+        subscriptions:
+          - name: port_counters
+            destination_group: collectors
+            path_target: COUNTERS_DB
+            paths: ["COUNTERS/Ethernet*"]
+            report_type: periodic
+            report_interval: 10000
+      diff: true
+      register: dialout_create_again
+
+    - name: Read the table
+      community.sonic.get_entry:
+        table: TELEMETRY_CLIENT
+      register: dialout_table
+
+    - name: Show the table
+      ansible.builtin.debug:
+        msg: "{{ dialout_table.value }}"
+
+    - name: Check the table holds exactly the configured entries and the module is idempotent
+      ansible.builtin.assert:
+        that:
+          - dialout_create is changed
+          - dialout_create.diff.after == dialout_table.value
+          - dialout_create_again is not changed
+          - dialout_create_again.diff.before == dialout_create_again.diff.after
+          - dialout_table.value | length == 3
+          - "dialout_table.value.Global == {'encoding': 'JSON_IETF', 'retry_interval': '30', 'unidirectional': 'true'}"
+          - "dialout_table.value.DestinationGroup_collectors == {'dst_addr': '[2001:db8::20]:8080,[2001:db8::21]:8080'}"
+          - dialout_table.value.Subscription_port_counters.dst_group == 'collectors'
+          - dialout_table.value.Subscription_port_counters.path_target == 'COUNTERS_DB'
+          - dialout_table.value.Subscription_port_counters.paths == 'COUNTERS/Ethernet*'
+          - dialout_table.value.Subscription_port_counters.report_type == 'periodic'
+          - dialout_table.value.Subscription_port_counters.report_interval == '10000'
+
+    - name: Check the comma lists are stored as plain strings
+      ansible.builtin.command: sonic-db-cli CONFIG_DB HGETALL "TELEMETRY_CLIENT|DestinationGroup_collectors"
+      changed_when: false
+      register: dialout_raw
+
+    - name: Check the raw entry
+      ansible.builtin.assert:
+        that:
+          - "'dst_addr' in dialout_raw.stdout"
+          - "'dst_addr@' not in dialout_raw.stdout"
+
+    - name: Add a subscription without touching the rest
+      community.sonic.telemetry_client:
+        exclusive: false
+        src_ip: 127.0.0.1
+        subscriptions:
+          - name: lldp
+            destination_group: collectors
+            path_target: APPL_DB
+            paths: [LLDP_ENTRY_TABLE]
+            report_type: stream
+      diff: true
+      register: dialout_merge
+
+    - name: Read the table after the merge
+      community.sonic.get_entry:
+        table: TELEMETRY_CLIENT
+      register: dialout_merged
+
+    - name: Check the merge kept the existing entries
+      ansible.builtin.assert:
+        that:
+          - dialout_merge is changed
+          - dialout_merge.subscriptions == ['lldp', 'port_counters']
+          - dialout_merged.value | length == 4
+          - dialout_merged.value.Global.src_ip == '127.0.0.1'
+          - dialout_merged.value.Global.retry_interval == '30'
+          - "dialout_merged.value.Subscription_lldp == {'dst_group': 'collectors', 'path_target': 'APPL_DB', 'paths': 'LLDP_ENTRY_TABLE', 'report_type': 'stream'}"
+          - dialout_merged.value.Subscription_port_counters == dialout_table.value.Subscription_port_counters
+
+    - name: Replace the table exclusively with a smaller configuration
+      community.sonic.telemetry_client:
+        retry_interval: 60
+        destination_groups:
+          - name: collectors
+            collectors: ["192.0.2.20:8080"]
+        subscriptions:
+          - name: port_counters
+            destination_group: collectors
+            path_target: COUNTERS_DB
+            paths: ["COUNTERS/Ethernet*", "COUNTERS/PortChannel*"]
+            report_type: periodic
+            report_interval: 5000
+      diff: true
+      register: dialout_replace
+
+    - name: Read the table after the replacement
+      community.sonic.get_entry:
+        table: TELEMETRY_CLIENT
+      register: dialout_replaced
+
+    - name: Check the unlisted entries and global fields are gone
+      ansible.builtin.assert:
+        that:
+          - dialout_replace is changed
+          - dialout_replace.subscriptions == ['port_counters']
+          - dialout_replaced.value | length == 3
+          - "dialout_replaced.value.Global == {'retry_interval': '60'}"
+          - "dialout_replaced.value.DestinationGroup_collectors == {'dst_addr': '192.0.2.20:8080'}"
+          - dialout_replaced.value.Subscription_port_counters.paths == 'COUNTERS/Ethernet*,COUNTERS/PortChannel*'
+          - "'Subscription_lldp' not in dialout_replaced.value"
+
+    - name: Reject a subscription for an unknown destination group
+      community.sonic.telemetry_client:
+        destination_groups:
+          - name: collectors
+            collectors: ["192.0.2.20:8080"]
+        subscriptions:
+          - name: port_counters
+            destination_group: nosuchgroup
+            paths: ["COUNTERS/Ethernet*"]
+      register: dialout_bad_group
+      ignore_errors: true
+
+    - name: Reject a collector without a port
+      community.sonic.telemetry_client:
+        destination_groups:
+          - name: collectors
+            collectors: ["192.0.2.20"]
+      register: dialout_bad_collector
+      ignore_errors: true
+
+    - name: Read the table after the failed runs
+      community.sonic.get_entry:
+        table: TELEMETRY_CLIENT
+      register: dialout_after_failures
+
+    - name: Check the failure messages and that nothing was written
+      ansible.builtin.assert:
+        that:
+          - dialout_bad_group is failed
+          - "'destination group \"nosuchgroup\", which is not configured' in dialout_bad_group.msg"
+          - dialout_bad_collector is failed
+          - "'must be host:port' in dialout_bad_collector.msg"
+          - dialout_after_failures.value == dialout_replaced.value
+
+    - name: Predict removing the table
+      community.sonic.telemetry_client:
+        state: absent
+      check_mode: true
+      diff: true
+      register: dialout_remove_prediction
+
+    - name: Remove the table
+      community.sonic.telemetry_client:
+        state: absent
+      diff: true
+      register: dialout_remove
+
+    - name: Remove the table again
+      community.sonic.telemetry_client:
+        state: absent
+      register: dialout_remove_again
+
+    - name: Read the table after the removal
+      community.sonic.get_entry:
+        table: TELEMETRY_CLIENT
+      register: dialout_removed
+
+    - name: Check the removal
+      ansible.builtin.assert:
+        that:
+          - dialout_remove_prediction is changed
+          - dialout_remove_prediction.diff.after == {}
+          - dialout_remove is changed
+          - dialout_remove.diff.before == dialout_replaced.value
+          - dialout_remove.destination_groups == []
+          - dialout_remove.subscriptions == []
+          - dialout_remove_again is not changed
+          - dialout_removed.value == {}
+
+  always:
+    - name: Empty the table before restoring it
+      community.sonic.telemetry_client:
+        state: absent
+
+    - name: Restore the original entries field by field
+      ansible.builtin.command:
+        argv: "{{ ['sonic-db-cli', 'CONFIG_DB', 'HSET', 'TELEMETRY_CLIENT|' ~ item.key]
+                  + (item.value | dict2items | map(attribute='key') | zip(item.value | dict2items | map(attribute='value')) | flatten) }}"
+      loop: "{{ telemetry_client_before.value | dict2items }}"
+      when: item.value | length > 0
+      changed_when: true
+
+    - name: Read the restored table
+      community.sonic.get_entry:
+        table: TELEMETRY_CLIENT
+      register: telemetry_client_after
+
+    - name: Check that the original table is back
+      ansible.builtin.assert:
+        that:
+          - telemetry_client_after.value == telemetry_client_before.value

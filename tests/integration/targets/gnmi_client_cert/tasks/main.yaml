@@ -1,0 +1,187 @@
+---
+# The GNMI_CLIENT_CERT table is read by the gNMI daemon on every connection,
+# so the test only needs CONFIG_DB. The mappings created here are removed again.
+- name: Record the GNMI_CLIENT_CERT table before the test
+  community.sonic.get_entry:
+    table: GNMI_CLIENT_CERT
+  register: client_certs_before
+
+- name: Show the previous state
+  ansible.builtin.debug:
+    msg: "{{ client_certs_before.value }}"
+
+- name: Check that the test common names are free
+  ansible.builtin.assert:
+    that:
+      - "'collector.test.example' not in client_certs_before.value"
+      - "'automation.test.example' not in client_certs_before.value"
+
+- name: Run the gNMI client certificate tests
+  block:
+    - name: Predict adding a read-only collector
+      community.sonic.gnmi_client_cert:
+        common_name: collector.test.example
+        role: gnmi_readonly
+      check_mode: true
+      diff: true
+      register: cert_prediction
+
+    - name: Read the table after check mode
+      community.sonic.get_entry:
+        table: GNMI_CLIENT_CERT
+      register: certs_after_check_mode
+
+    - name: Check that check mode predicted the change without writing
+      ansible.builtin.assert:
+        that:
+          - cert_prediction is changed
+          - cert_prediction.common_name == 'collector.test.example'
+          - cert_prediction.role == ['gnmi_readonly']
+          - "cert_prediction.diff == {'before': {}, 'after': {'role': ['gnmi_readonly']}}"
+          - "'collector.test.example' not in certs_after_check_mode.value"
+
+    - name: Add a read-only collector
+      community.sonic.gnmi_client_cert:
+        common_name: collector.test.example
+        role: gnmi_readonly
+      diff: true
+      register: cert_add
+
+    - name: Add the read-only collector again
+      community.sonic.gnmi_client_cert:
+        common_name: collector.test.example
+        role: gnmi_readonly
+      diff: true
+      register: cert_add_again
+
+    - name: Add an automation host with two roles
+      community.sonic.gnmi_client_cert:
+        cn: automation.test.example
+        roles:
+          - gnmi_readonly
+          - gnmi_readwrite
+      register: cert_add_two
+
+    - name: Read the mappings
+      community.sonic.get_entry:
+        table: GNMI_CLIENT_CERT
+      register: client_certs
+
+    - name: Show the table
+      ansible.builtin.debug:
+        msg: "{{ client_certs.value }}"
+
+    - name: Check the mappings are stored as role lists and the module is idempotent
+      ansible.builtin.assert:
+        that:
+          - cert_add is changed
+          - "cert_add.diff.after == {'role': ['gnmi_readonly']}"
+          - cert_add_again is not changed
+          - cert_add_again.diff.before == cert_add_again.diff.after
+          - cert_add_two is changed
+          - "client_certs.value['collector.test.example'] == {'role': ['gnmi_readonly']}"
+          - "client_certs.value['automation.test.example'] == {'role': ['gnmi_readonly', 'gnmi_readwrite']}"
+
+    - name: Check that the roles are stored as a comma separated role@ field
+      ansible.builtin.command: sonic-db-cli CONFIG_DB HGETALL "GNMI_CLIENT_CERT|automation.test.example"
+      changed_when: false
+      register: cert_raw
+
+    - name: Show the raw entry
+      ansible.builtin.debug:
+        msg: "{{ cert_raw.stdout }}"
+
+    - name: Check the raw entry
+      ansible.builtin.assert:
+        that:
+          - "'role@' in cert_raw.stdout"
+          - "'gnmi_readonly,gnmi_readwrite' in cert_raw.stdout"
+
+    - name: Change the roles of the collector
+      community.sonic.gnmi_client_cert:
+        common_name: collector.test.example
+        role: [gnmi_readwrite]
+      diff: true
+      register: cert_update
+
+    - name: Read the updated mapping
+      community.sonic.get_entry:
+        table: GNMI_CLIENT_CERT
+        key: collector.test.example
+      register: cert_updated
+
+    - name: Check the roles were replaced
+      ansible.builtin.assert:
+        that:
+          - cert_update is changed
+          - "cert_update.diff.before == {'role': ['gnmi_readonly']}"
+          - "cert_update.diff.after == {'role': ['gnmi_readwrite']}"
+          - "cert_updated.value == {'role': ['gnmi_readwrite']}"
+
+    - name: Predict removing the collector
+      community.sonic.gnmi_client_cert:
+        common_name: collector.test.example
+        state: absent
+      check_mode: true
+      diff: true
+      register: cert_remove_prediction
+
+    - name: Remove the collector
+      community.sonic.gnmi_client_cert:
+        common_name: collector.test.example
+        state: absent
+      diff: true
+      register: cert_remove
+
+    - name: Remove the collector again
+      community.sonic.gnmi_client_cert:
+        common_name: collector.test.example
+        state: absent
+      register: cert_remove_again
+
+    - name: Read the table after the removal
+      community.sonic.get_entry:
+        table: GNMI_CLIENT_CERT
+      register: certs_after_remove
+
+    - name: Check the removal
+      ansible.builtin.assert:
+        that:
+          - cert_remove_prediction is changed
+          - cert_remove_prediction.diff.after == {}
+          - cert_remove is changed
+          - cert_remove.role == []
+          - cert_remove_again is not changed
+          - "'collector.test.example' not in certs_after_remove.value"
+          - "'automation.test.example' in certs_after_remove.value"
+
+    - name: Reject a mapping without roles
+      community.sonic.gnmi_client_cert:
+        common_name: collector.test.example
+      register: cert_no_role
+      ignore_errors: true
+
+    - name: Check the failure message
+      ansible.builtin.assert:
+        that:
+          - cert_no_role is failed
+          - "'role' in cert_no_role.msg"
+
+  always:
+    - name: Remove the test mappings
+      community.sonic.gnmi_client_cert:
+        common_name: "{{ item }}"
+        state: absent
+      loop:
+        - collector.test.example
+        - automation.test.example
+
+    - name: Read the table after the cleanup
+      community.sonic.get_entry:
+        table: GNMI_CLIENT_CERT
+      register: client_certs_after
+
+    - name: Check that the table is as it was
+      ansible.builtin.assert:
+        that:
+          - client_certs_after.value == client_certs_before.value

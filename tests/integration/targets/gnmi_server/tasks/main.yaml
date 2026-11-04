@@ -1,0 +1,255 @@
+---
+# The gnmi (or, on older images, telemetry) container reads its settings when
+# it starts, so after changing the port the service is restarted and the test
+# waits, with a bound, for the daemon to listen on the new port. That part
+# only runs when the feature is enabled on the virtual switch. Both entries
+# are restored field by field at the end and the service is restarted again.
+- name: Record the gNMI related tables before the test
+  community.sonic.get_entry:
+    table: "{{ item }}"
+  loop: [GNMI, TELEMETRY, FEATURE]
+  register: gnmi_tables_before
+
+- name: Work out which table and service this image uses
+  ansible.builtin.set_fact:
+    gnmi_table: "{{ 'GNMI' if 'gnmi' in gnmi_tables_before.results[2].value else 'TELEMETRY' }}"
+    gnmi_service: "{{ 'gnmi' if 'gnmi' in gnmi_tables_before.results[2].value else 'telemetry' }}"
+    gnmi_feature: "{{ gnmi_tables_before.results[2].value.gnmi | default(gnmi_tables_before.results[2].value.telemetry | default({})) }}"
+
+- name: Remember the previous entries
+  ansible.builtin.set_fact:
+    gnmi_server_before: "{{ (gnmi_tables_before.results[0].value if gnmi_table == 'GNMI' else gnmi_tables_before.results[1].value).gnmi | default({}) }}"
+    gnmi_certs_before: "{{ (gnmi_tables_before.results[0].value if gnmi_table == 'GNMI' else gnmi_tables_before.results[1].value).certs | default({}) }}"
+    gnmi_enabled: "{{ gnmi_feature.state | default('disabled') == 'enabled' }}"
+
+- name: Show the previous state
+  ansible.builtin.debug:
+    msg:
+      table: "{{ gnmi_table }}"
+      service: "{{ gnmi_service }}"
+      feature: "{{ gnmi_feature }}"
+      gnmi: "{{ gnmi_server_before }}"
+      certs: "{{ gnmi_certs_before }}"
+
+- name: Run the gNMI server tests
+  block:
+    - name: Predict changing the port and log level
+      community.sonic.gnmi_server:
+        port: 50099
+        log_level: 3
+      check_mode: true
+      diff: true
+      register: gnmi_prediction
+
+    - name: Read the server entry after check mode
+      community.sonic.get_entry:
+        table: "{{ gnmi_table }}"
+        key: gnmi
+      register: gnmi_after_check_mode
+
+    - name: Check that check mode predicted the change without writing
+      ansible.builtin.assert:
+        that:
+          - gnmi_prediction is changed
+          - gnmi_prediction.table == gnmi_table
+          - gnmi_prediction.diff.before.gnmi == gnmi_server_before
+          - gnmi_prediction.diff.before.certs == gnmi_certs_before
+          - gnmi_prediction.diff.after.gnmi.port == '50099'
+          - gnmi_prediction.diff.after.gnmi.log_level == '3'
+          - gnmi_prediction.diff.after.certs == gnmi_certs_before
+          - gnmi_after_check_mode.value == gnmi_server_before
+
+    - name: Change the port and log level
+      community.sonic.gnmi_server:
+        port: 50099
+        log_level: 3
+      diff: true
+      register: gnmi_change
+
+    - name: Change the port and log level again
+      community.sonic.gnmi_server:
+        port: 50099
+        log_level: 3
+      diff: true
+      register: gnmi_change_again
+
+    - name: Read the server and certs entries
+      community.sonic.get_entry:
+        table: "{{ gnmi_table }}"
+        key: "{{ item }}"
+      loop: [gnmi, certs]
+      register: gnmi_entries
+
+    - name: Check the entry was updated, other fields kept and the module is idempotent
+      ansible.builtin.assert:
+        that:
+          - gnmi_change is changed
+          - gnmi_change.table == gnmi_table
+          - gnmi_change.diff.after.gnmi == gnmi_entries.results[0].value
+          - gnmi_entries.results[0].value.port == '50099'
+          - gnmi_entries.results[0].value.log_level == '3'
+          - >-
+            gnmi_entries.results[0].value | dict2items | rejectattr('key', 'in', ['port', 'log_level']) | items2dict
+            == gnmi_server_before | dict2items | rejectattr('key', 'in', ['port', 'log_level']) | items2dict
+          - gnmi_entries.results[1].value == gnmi_certs_before
+          - gnmi_change_again is not changed
+          - gnmi_change_again.diff.before == gnmi_change_again.diff.after
+
+    - name: Restart the gNMI service so it picks up the new port
+      ansible.builtin.systemd_service:
+        name: "{{ gnmi_service }}"
+        state: restarted
+      become: true
+      when: gnmi_enabled
+
+    - name: Wait for the gNMI server to listen on the new port
+      ansible.builtin.command: ss -Hltn
+      changed_when: false
+      register: gnmi_listeners
+      until: gnmi_listeners.stdout is search(':50099 ')
+      retries: 40
+      delay: 3
+      when: gnmi_enabled
+
+    - name: Show the listening sockets
+      ansible.builtin.debug:
+        msg: "{{ gnmi_listeners.stdout_lines | default('feature disabled, listen check skipped') }}"
+
+    - name: Check that the gNMI server listens on the configured port
+      ansible.builtin.assert:
+        that:
+          - gnmi_listeners.stdout is search(':50099 ')
+        fail_msg: "nothing listens on port 50099 after restarting {{ gnmi_service }}"
+      when: gnmi_enabled
+
+    - name: Predict pointing the server at certificate files
+      community.sonic.gnmi_server:
+        client_auth: true
+        user_auth: [password, jwt, cert]
+        ca_cert: /etc/sonic/telemetry/ca.cer
+        server_cert: /etc/sonic/telemetry/server.cer
+        server_key: /etc/sonic/telemetry/server.key
+      check_mode: true
+      diff: true
+      register: gnmi_certs_prediction
+
+    - name: Read the certs entry after check mode
+      community.sonic.get_entry:
+        table: "{{ gnmi_table }}"
+        key: certs
+      register: gnmi_certs_after_check_mode
+
+    - name: Check the certificate prediction without writing
+      ansible.builtin.assert:
+        that:
+          - gnmi_certs_prediction is changed
+          - gnmi_certs_prediction.diff.after.gnmi.client_auth == 'true'
+          - gnmi_certs_prediction.diff.after.gnmi.user_auth == 'password,jwt,cert'
+          - gnmi_certs_prediction.diff.after.certs.ca_crt == '/etc/sonic/telemetry/ca.cer'
+          - gnmi_certs_prediction.diff.after.certs.server_crt == '/etc/sonic/telemetry/server.cer'
+          - gnmi_certs_prediction.diff.after.certs.server_key == '/etc/sonic/telemetry/server.key'
+          - gnmi_certs_after_check_mode.value == gnmi_certs_before
+
+    - name: Write to the other table explicitly
+      community.sonic.gnmi_server:
+        table: "{{ 'TELEMETRY' if gnmi_table == 'GNMI' else 'GNMI' }}"
+        port: 50098
+      diff: true
+      register: gnmi_other_table
+
+    - name: Read the other table
+      community.sonic.get_entry:
+        table: "{{ 'TELEMETRY' if gnmi_table == 'GNMI' else 'GNMI' }}"
+        key: gnmi
+      register: gnmi_other_entry
+
+    - name: Check the override wrote the other table only
+      ansible.builtin.assert:
+        that:
+          - gnmi_other_table is changed
+          - gnmi_other_table.table != gnmi_table
+          - gnmi_other_entry.value.port == '50098'
+
+    - name: Remove the entries from the other table again
+      community.sonic.gnmi_server:
+        table: "{{ 'TELEMETRY' if gnmi_table == 'GNMI' else 'GNMI' }}"
+        state: absent
+      register: gnmi_other_absent
+
+    - name: Read the other table after the removal
+      community.sonic.get_entry:
+        table: "{{ 'TELEMETRY' if gnmi_table == 'GNMI' else 'GNMI' }}"
+      register: gnmi_other_after
+
+    - name: Check the other table is clean again
+      ansible.builtin.assert:
+        that:
+          - gnmi_other_absent is changed
+          - "'gnmi' not in gnmi_other_after.value"
+          - "'certs' not in gnmi_other_after.value"
+
+    - name: Reject an invalid port
+      community.sonic.gnmi_server:
+        port: 70000
+      register: gnmi_bad_port
+      ignore_errors: true
+
+    - name: Reject contradictory authentication methods
+      community.sonic.gnmi_server:
+        user_auth: [none, cert]
+      register: gnmi_bad_auth
+      ignore_errors: true
+
+    - name: Check the failure messages
+      ansible.builtin.assert:
+        that:
+          - gnmi_bad_port is failed
+          - "'port must be between 1 and 65535' in gnmi_bad_port.msg"
+          - gnmi_bad_auth is failed
+          - "'cannot be combined' in gnmi_bad_auth.msg"
+
+  always:
+    - name: Remove the gnmi and certs entries before restoring them
+      community.sonic.gnmi_server:
+        table: "{{ gnmi_table }}"
+        state: absent
+
+    - name: Restore the original entries field by field
+      ansible.builtin.command:
+        argv: "{{ ['sonic-db-cli', 'CONFIG_DB', 'HSET', gnmi_table ~ '|' ~ item.key]
+                  + (item.value | dict2items | map(attribute='key') | zip(item.value | dict2items | map(attribute='value')) | flatten) }}"
+      loop:
+        - { key: gnmi, value: "{{ gnmi_server_before }}" }
+        - { key: certs, value: "{{ gnmi_certs_before }}" }
+      when: item.value | length > 0
+      changed_when: true
+
+    - name: Read the restored entries
+      community.sonic.get_entry:
+        table: "{{ gnmi_table }}"
+        key: "{{ item }}"
+      loop: [gnmi, certs]
+      register: gnmi_restored
+
+    - name: Check that the original entries are back
+      ansible.builtin.assert:
+        that:
+          - gnmi_restored.results[0].value == gnmi_server_before
+          - gnmi_restored.results[1].value == gnmi_certs_before
+
+    - name: Restart the gNMI service with the original settings
+      ansible.builtin.systemd_service:
+        name: "{{ gnmi_service }}"
+        state: restarted
+      become: true
+      when: gnmi_enabled
+
+    - name: Wait for the gNMI service to be active again
+      ansible.builtin.command: systemctl is-active {{ gnmi_service }}
+      changed_when: false
+      failed_when: false
+      register: gnmi_active
+      until: gnmi_active.stdout == 'active'
+      retries: 40
+      delay: 3
+      when: gnmi_enabled

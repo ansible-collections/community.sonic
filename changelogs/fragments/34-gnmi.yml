@@ -1,0 +1,3 @@
+---
+minor_changes:
+  - Add the ``gnmi_server``, ``gnmi_client_cert`` and ``telemetry_client`` modules to manage the gNMI dial-in server (``GNMI`` or legacy ``TELEMETRY`` table, detected from the ``FEATURE`` table), client certificate to role mappings (``GNMI_CLIENT_CERT``) and the gNMI dial-out client (``TELEMETRY_CLIENT`` global settings, destination groups and subscriptions) (https://github.com/ansible-collections/community.sonic/issues/34).
