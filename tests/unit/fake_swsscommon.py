@@ -85,7 +85,8 @@ class FakeConfigDBConnector(object):
             if k == 'NULL':
                 continue
             if k.endswith('@'):
-                typed[k[:-1]] = v.split(',') if v != '' else []
+                # Like the real connector, an empty list reads back as [''].
+                typed[k[:-1]] = v.split(',')
             else:
                 typed[k] = v
         return typed
