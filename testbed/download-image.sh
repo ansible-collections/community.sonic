@@ -19,12 +19,28 @@ if [[ -z "${SONIC_IMAGE_URL:-}" ]]; then
   SONIC_IMAGE_URL="${url}&subPath=%2Ftarget%2Fsonic-vs.img.gz"
 fi
 
-# Publish the image only after curl and gzip both succeed, preserving any
-# existing cached image if a transfer stalls or an archive is truncated.
+# Download the compressed image to a temporary file first so a connection
+# reset mid-transfer (the artifact server does that now and then) is retried
+# and resumed instead of failing the job, then decompress. Publish the image
+# only after both steps succeed, preserving any existing cached image if a
+# transfer stalls or an archive is truncated.
 target=${SONIC_IMAGE_PATH:-/opt/sonic-vs.img}
 partial=$(mktemp "${target}.XXXXXX")
-trap 'test ! -e "$partial" || rm -- "$partial"' EXIT
-curl -fL --connect-timeout 30 --speed-time 60 --speed-limit 1024 \
-  --max-time 1200 "$SONIC_IMAGE_URL" | gzip -dc | \
-  dd of="$partial" bs=1M conv=sparse status=none
+archive="${partial}.gz"
+trap 'rm -f -- "$partial" "$archive"' EXIT
+attempt=0
+until curl -fL --connect-timeout 30 --speed-time 60 --speed-limit 1024 \
+    --max-time 1200 --retry 5 --retry-delay 10 --retry-all-errors \
+    -C - -o "$archive" "$SONIC_IMAGE_URL"; do
+  attempt=$((attempt + 1))
+  if (( attempt >= 3 )); then
+    echo "Giving up downloading $SONIC_IMAGE_URL after $attempt attempts" >&2
+    exit 1
+  fi
+  echo "Download interrupted, resuming (attempt $((attempt + 1)))" >&2
+  sleep 15
+done
+gzip -t "$archive"
+gzip -dc "$archive" | dd of="$partial" bs=1M conv=sparse status=none
+rm -f -- "$archive"
 mv "$partial" "$target"
