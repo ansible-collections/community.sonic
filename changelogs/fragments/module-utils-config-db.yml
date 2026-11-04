@@ -1,6 +1,0 @@
----
-minor_changes:
-  - Add the ``community.sonic.plugins.module_utils.config_db`` helper layer with a ``ConfigDB`` wrapper (check-mode aware reads and writes, ``ensure_entry``/``ensure_absent`` with before/after diffs), compound key helpers, port alias resolution, interface type classification, boolean-to-string helpers and the standard result builder for writing new modules.
-  - Add a dict-backed fake ``swsscommon`` and ``run_module`` pytest fixtures under ``tests/unit`` so module unit tests can seed CONFIG_DB content and assert on writes without a SONiC device.
-  - get_entry, sonic_interface_port, vlan, vlan_member - use the shared ``config_db`` module_utils; options, results and diff output are unchanged.
-  - Document how to write a module, the proposed short module naming convention and the expected integration target layout in CONTRIBUTING.md.

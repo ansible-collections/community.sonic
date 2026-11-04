@@ -1,3 +1,0 @@
----
-minor_changes:
-  - Add the ``dns_nameserver`` module to manage the static DNS nameservers in the ``DNS_NAMESERVER`` table, either one address at a time or as an optionally exclusive list (https://github.com/ansible-collections/community.sonic/issues/28).

@@ -1,4 +1,0 @@
----
-minor_changes:
-  - Add the ``loopback`` module to create and remove ``LoopbackN`` interfaces and bind them to a VRF (``LOOPBACK_INTERFACE``).
-  - Add the ``interface_ip`` module to manage IPv4 and IPv6 addresses on Ethernet, PortChannel, VLAN and Loopback interfaces (``INTERFACE``, ``PORTCHANNEL_INTERFACE``, ``VLAN_INTERFACE`` and ``LOOPBACK_INTERFACE``), creating the interface's L3 entry with the first address and optionally removing it with the last one.

@@ -1,4 +1,0 @@
----
-minor_changes:
-  - mgmt_interface - new module managing management interface addresses and gateways (``MGMT_INTERFACE``) per address and the management port settings (``MGMT_PORT``) (https://github.com/ansible-collections/community.sonic/issues/26).
-  - mgmt_vrf - new module enabling or disabling the management VRF (``MGMT_VRF_CONFIG``) (https://github.com/ansible-collections/community.sonic/issues/26).

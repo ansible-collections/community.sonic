@@ -1,6 +1,0 @@
----
-minor_changes:
-  - Add the ``acl_table`` module to manage ``ACL_TABLE`` entries, with a ``family_mode`` option that lays a dual-stack policy out as one ``L3V4V6`` table or as ``L3`` plus ``L3V6`` tables depending on what the ASIC supports, and that verifies the result through the ``STATE_DB`` status orchagent publishes (https://github.com/ansible-collections/community.sonic/issues/35).
-  - Add the ``acl_rule`` module to manage the rules of an ACL table declaratively, routing rules to the IPv4 or IPv6 table of a split policy and checking the ``STATE_DB`` rule status after writing (https://github.com/ansible-collections/community.sonic/issues/35).
-  - Add ``plugins/module_utils/acl.py`` with the shared ACL layout detection and ``STATE_DB`` status helpers. Before changing a table or rule the modules delete its ``STATE_DB`` status entry, so the status check after the write cannot accept the status of the previous configuration.
-  - tests - the fake ``swsscommon`` connector now returns ``['']`` for an empty list field, as the real ``ConfigDBConnector`` does.

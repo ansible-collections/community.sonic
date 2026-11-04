@@ -1,3 +1,0 @@
----
-minor_changes:
-  - Add the ``vxlan_tunnel`` and ``vxlan_map`` modules to manage the VXLAN tunnel endpoint (``VXLAN_TUNNEL``), the EVPN NVO bound to it (``VXLAN_EVPN_NVO``) and VLAN-to-VNI maps (``VXLAN_TUNNEL_MAP``), enforcing the single VTEP and NVO rule and removing maps, NVO and tunnel in order with ``force`` (https://github.com/ansible-collections/community.sonic/issues/32).
