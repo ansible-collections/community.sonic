@@ -1,4 +1,0 @@
----
-minor_changes:
-  - Add the ``snmp`` module to manage the SNMP agent location and contact in the ``SNMP`` table (https://github.com/ansible-collections/community.sonic/issues/24).
-  - Add the ``snmp_community`` module to manage SNMP community strings in the ``SNMP_COMMUNITY`` table; the community string is ``no_log`` and kept out of the result and diff (https://github.com/ansible-collections/community.sonic/issues/24).

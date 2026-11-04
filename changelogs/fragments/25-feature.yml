@@ -1,3 +1,0 @@
----
-minor_changes:
-  - Add the ``feature`` module to enable or disable SONiC features (containers) and manage their ``auto_restart`` and ``high_mem_alert`` settings through the ``FEATURE`` table (https://github.com/ansible-collections/community.sonic/issues/25).

@@ -1,3 +1,0 @@
----
-minor_changes:
-  - Add the ``sonic_facts`` module that gathers SONiC device facts (platform, HWSKU, ASIC type, hostname, MAC address, software version and build, management VRF state, feature states) under ``ansible_facts.sonic``, with optional ``config_db`` and ``saved_config_db`` subsets for the complete running configuration database and the parsed ``/etc/sonic/config_db.json`` (https://github.com/ansible-collections/community.sonic/issues/33).

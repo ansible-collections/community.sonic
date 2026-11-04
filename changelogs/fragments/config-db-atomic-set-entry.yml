@@ -1,2 +1,0 @@
-bugfixes:
-  - "module_utils config_db - replacing an entry (``set_entry``, used by every module that owns its entries) now runs the ``HSET`` of the new fields and the ``HDEL`` of the removed ones in a single redis transaction. swsscommon issues them as separate commands, and daemons that re-read the entry on every keyspace event (orchagent, hostcfgd) could evaluate the intermediate entry that still carried the removed fields, for example rejecting an ACL rule as invalid before the final write arrived."

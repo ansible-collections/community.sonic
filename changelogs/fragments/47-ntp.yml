@@ -1,3 +1,0 @@
----
-minor_changes:
-  - Add the ``ntp``, ``ntp_server`` and ``ntp_key`` modules to manage the global NTP settings (``NTP|global``), the NTP servers and pools (``NTP_SERVER``, one at a time or as an optionally exclusive list) and the NTP authentication keys (``NTP_KEY``) (https://github.com/ansible-collections/community.sonic/issues/47).

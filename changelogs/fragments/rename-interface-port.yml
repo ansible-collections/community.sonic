@@ -1,4 +1,0 @@
-minor_changes:
-  - interface_port - the ``sonic_interface_port`` module has been renamed to ``interface_port``; modules in this collection use short names without a ``sonic_`` prefix because the fully qualified name already carries the collection name.
-deprecated_features:
-  - sonic_interface_port - the module name is deprecated and redirects to ``community.sonic.interface_port``. The redirect will be removed in community.sonic 2.0.0; use ``community.sonic.interface_port`` instead.

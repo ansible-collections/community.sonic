@@ -79,11 +79,12 @@ has been removed. The custom testbed uses Debian Trixie, current core branches,
 8 GiB VM RAM, and bounded boot waiting. `SONIC_MEMORY_MIB` and
 `SONIC_BOOT_TIMEOUT` allow local tuning.
 
-The collection is still version 0.3.1. The refresh is unreleased. Dropping older
-ansible-core support is a breaking change and must be released in a major
-version (plan 1.0.0). Do not publish this checkout as another 0.3.1 artifact.
-Ansible package inclusion also requires a published version of at least 1.0.0
-and an inclusion review; this audit does not claim package inclusion.
+The refresh was released as version 0.4.0 on 2026-11-04 (tag `v0.4.0`), a
+minor version because the collection is still pre-1.0 and the ansible-core
+2.19 requirement is recorded under breaking changes in the changelog. Releases
+are GitHub tags and releases; the collection is not published on Galaxy.
+Ansible package inclusion requires a published version of at least 1.0.0 and
+an inclusion review; this audit does not claim package inclusion.
 
 
 ## Validation and release

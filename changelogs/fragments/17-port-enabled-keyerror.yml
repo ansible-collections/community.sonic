@@ -1,3 +1,0 @@
----
-bugfixes:
-  - sonic_interface_port - ``enabled=false`` no longer raises KeyError on a port without ``admin_status`` in CONFIG_DB, such as a factory-default configuration or a port that is already disabled, and is idempotent in that case. Disabling now writes ``admin_status=down`` instead of removing the field, which SONiC ignores for an already configured port (https://github.com/ansible-collections/community.sonic/issues/17).
