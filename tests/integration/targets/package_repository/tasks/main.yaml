@@ -1,0 +1,219 @@
+---
+# package_repository drives `sonic-package-manager repository add/remove`,
+# which needs root: the integration inventory connects as admin, who has
+# passwordless sudo on SONiC, so the writing tasks run with become. Reading
+# the state (idempotent runs, check mode) is done as admin on purpose. The
+# repository points at an invalid registry: nothing is pulled from it.
+- name: Test package_repository
+  vars:
+    repo_name: cs-test-repo
+    repo_url: registry.invalid/community-sonic/cs-test
+  block:
+    - name: Add a repository in check mode
+      community.sonic.package_repository:
+        name: '{{ repo_name }}'
+        repository: '{{ repo_url }}'
+        default_reference: "1.0.0"
+        description: community.sonic integration test
+      check_mode: true
+      diff: true
+      register: add_check
+
+    - name: List packages after check mode
+      ansible.builtin.command: sonic-package-manager list
+      changed_when: false
+      register: list_after_check
+
+    - name: Check mode reports the change without adding anything
+      ansible.builtin.assert:
+        that:
+          - add_check is changed
+          - add_check.status == 'Not Installed'
+          - add_check.diff.before == {}
+          - add_check.diff.after.repository == repo_url
+          - add_check.commands == []
+          - repo_name not in list_after_check.stdout
+
+    - name: Adding without root privileges fails with a helpful message
+      community.sonic.package_repository:
+        name: '{{ repo_name }}'
+        repository: '{{ repo_url }}'
+      register: no_root
+      ignore_errors: true
+
+    - name: Check the failure message
+      ansible.builtin.assert:
+        that:
+          - no_root is failed
+          - "'become: true' in no_root.msg"
+
+    - name: Add a repository
+      community.sonic.package_repository:
+        name: '{{ repo_name }}'
+        repository: '{{ repo_url }}'
+        default_reference: "1.0.0"
+        description: community.sonic integration test
+      become: true
+      diff: true
+      register: add
+
+    - name: Output from package_repository
+      ansible.builtin.debug:
+        msg: '{{ add }}'
+
+    - name: List packages
+      ansible.builtin.command: sonic-package-manager list
+      changed_when: false
+      register: list_after_add
+
+    - name: Output from sonic-package-manager list
+      ansible.builtin.debug:
+        msg: '{{ list_after_add.stdout }}'
+
+    - name: Check the module returns what we expect
+      ansible.builtin.assert:
+        that:
+          - add is changed
+          - add.name == repo_name
+          - add.repository == repo_url
+          - add.default_reference == '1.0.0'
+          - add.description == 'community.sonic integration test'
+          - add.status == 'Not Installed'
+          - add.commands | length == 1
+          - "'repository add' in add.commands[0]"
+          - add.diff.after == add_check.diff.after
+          - list_after_add.stdout is search('(?m)^' ~ repo_name ~ '\s+' ~ repo_url ~ '\s+community.sonic integration test\s+N/A\s+Not Installed')
+
+    - name: Read the package database
+      ansible.builtin.slurp:
+        src: /var/lib/sonic-package-manager/packages.json
+      become: true
+      register: database
+
+    - name: Check the database entry
+      vars:
+        entry: '{{ (database.content | b64decode | from_json)[repo_name] }}'
+      ansible.builtin.assert:
+        that:
+          - entry.repository == repo_url
+          - entry['default-reference'] == '1.0.0'
+          - entry.description == 'community.sonic integration test'
+          - not entry.installed
+
+    - name: Add the same repository again
+      community.sonic.package_repository:
+        name: '{{ repo_name }}'
+        repository: '{{ repo_url }}'
+        default_reference: "1.0.0"
+        description: community.sonic integration test
+      register: add_again
+
+    - name: Add the same repository again without the optional fields
+      community.sonic.package_repository:
+        name: '{{ repo_name }}'
+        repository: '{{ repo_url }}'
+      register: add_minimal
+
+    - name: Check that adding is idempotent
+      ansible.builtin.assert:
+        that:
+          - add_again is not changed
+          - add_again.commands == []
+          - add_again.diff.before == add_again.diff.after
+          - add_minimal is not changed
+          - add_minimal.default_reference == '1.0.0'
+          - add_minimal.description == 'community.sonic integration test'
+
+    - name: Change the default reference
+      community.sonic.package_repository:
+        name: '{{ repo_name }}'
+        repository: '{{ repo_url }}'
+        default_reference: "1.1.0"
+      become: true
+      diff: true
+      register: modify
+
+    - name: Check that the entry was replaced
+      ansible.builtin.assert:
+        that:
+          - modify is changed
+          - modify.default_reference == '1.1.0'
+          - modify.description == 'community.sonic integration test'
+          - modify.diff.before.default_reference == '1.0.0'
+          - modify.diff.after.default_reference == '1.1.0'
+          - modify.commands | length == 2
+          - "'repository remove' in modify.commands[0]"
+          - "'repository add' in modify.commands[1]"
+
+    - name: Remove the repository in check mode
+      community.sonic.package_repository:
+        name: '{{ repo_name }}'
+        state: absent
+      check_mode: true
+      register: remove_check
+
+    - name: List packages after check mode removal
+      ansible.builtin.command: sonic-package-manager list
+      changed_when: false
+      register: list_after_remove_check
+
+    - name: Check mode reports the removal without removing anything
+      ansible.builtin.assert:
+        that:
+          - remove_check is changed
+          - remove_check.status == 'Absent'
+          - remove_check.diff.after == {}
+          - repo_name in list_after_remove_check.stdout
+
+    - name: Remove the repository
+      community.sonic.package_repository:
+        name: '{{ repo_name }}'
+        state: absent
+      become: true
+      register: remove
+
+    - name: List packages after removal
+      ansible.builtin.command: sonic-package-manager list
+      changed_when: false
+      register: list_after_remove
+
+    - name: Check that the repository is gone
+      ansible.builtin.assert:
+        that:
+          - remove is changed
+          - remove.status == 'Absent'
+          - remove.repository is none
+          - repo_name not in list_after_remove.stdout
+
+    - name: Remove the repository again
+      community.sonic.package_repository:
+        name: '{{ repo_name }}'
+        state: absent
+      register: remove_again
+
+    - name: Check that removing is idempotent
+      ansible.builtin.assert:
+        that:
+          - remove_again is not changed
+          - remove_again.commands == []
+
+    - name: Removing a built-in package entry fails
+      community.sonic.package_repository:
+        name: database
+        state: absent
+      become: true
+      register: remove_built_in
+      ignore_errors: true
+
+    - name: Check the failure message
+      ansible.builtin.assert:
+        that:
+          - remove_built_in is failed
+          - "'built-in' in remove_built_in.msg"
+
+  always:
+    - name: Remove the test repository
+      community.sonic.package_repository:
+        name: '{{ repo_name }}'
+        state: absent
+      become: true
